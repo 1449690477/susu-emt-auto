@@ -14,6 +14,7 @@ import traceback
 import copy
 import queue
 import random
+import importlib.util
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -25,14 +26,46 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = APP_DIR
 
+
+def ensure_directory(path: str):
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        # 可能是只读目录（如 _MEIPASS），忽略异常
+        pass
+
+
+def resolve_preferred_directory(preferred_path: str, fallback_path: str) -> str:
+    """Return the preferred runtime directory when available.
+
+    Packaged builds may expose writable folders next to the executable. For
+    those cases we prefer the sibling directory (``preferred_path``) so custom
+    assets persist across updates. When only the bundled resources exist we
+    fall back to the internal path shipped with the program. If neither is
+    present we create the preferred location to keep behaviour consistent with
+    prior releases.
+    """
+
+    if os.path.isdir(preferred_path):
+        return preferred_path
+    if os.path.isdir(fallback_path):
+        return fallback_path
+
+    ensure_directory(preferred_path)
+    return preferred_path
+
+
 BASE_DIR = DATA_DIR
 TEMPLATE_DIR = os.path.join(DATA_DIR, "templates")
 SCRIPTS_DIR = os.path.join(DATA_DIR, "scripts")
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 SP_DIR = os.path.join(DATA_DIR, "SP")
 UID_DIR = os.path.join(DATA_DIR, "UID")
-
 MOD_DIR = os.path.join(DATA_DIR, "mod")
+GAME_DIR = os.path.join(DATA_DIR, "Game")
+
+MOD_DIR = resolve_preferred_directory(os.path.join(APP_DIR, "mod"), MOD_DIR)
+GAME_DIR = resolve_preferred_directory(os.path.join(APP_DIR, "Game"), GAME_DIR)
 
 # 新项目：人物密函图片 / 掉落物图片
 TEMPLATE_LETTERS_DIR = os.path.join(DATA_DIR, "templates_letters")
@@ -46,8 +79,9 @@ for d in (
     SP_DIR,
     UID_DIR,
     MOD_DIR,
+    GAME_DIR,
 ):
-    os.makedirs(d, exist_ok=True)
+    ensure_directory(d)
 
 # ---------- 第三方库 ----------
 try:
@@ -73,6 +107,14 @@ try:
 except Exception:
     gw = None
 
+_pil_spec = importlib.util.find_spec("PIL")
+if _pil_spec is not None:
+    from PIL import Image, ImageOps, ImageTk
+else:
+    Image = None
+    ImageOps = None
+    ImageTk = None
+
 # ---------- 全局 ----------
 DEFAULT_CONFIG = {
     "hotkey": "1",
@@ -84,6 +126,7 @@ DEFAULT_CONFIG = {
         "waves": 10,
         "timeout": 160,
         "hotkey": "",
+        "no_trick_decrypt": False,
     },
     "expel_settings": {
         "waves": 10,
@@ -94,6 +137,7 @@ DEFAULT_CONFIG = {
         "waves": 10,
         "timeout": 160,
         "hotkey": "",
+        "no_trick_decrypt": False,
     },
     "mod_expel_settings": {
         "waves": 10,
@@ -157,6 +201,9 @@ AUTO_REVIVE_TEMPLATE = "x.png"
 AUTO_REVIVE_THRESHOLD = 0.8
 AUTO_REVIVE_CHECK_INTERVAL = 10.0
 AUTO_REVIVE_HOLD_SECONDS = 6.0
+
+LETTER_MATCH_THRESHOLD = 0.8
+LETTER_IMAGE_SIZE = 128
 
 UID_MASK_ALPHA = 0.92
 UID_MASK_CELL = 10
@@ -414,9 +461,12 @@ def match_template_from_path(path: str):
     return max_val, x, y
 
 
-def wait_and_click_template_from_path(path: str, step_name: str,
-                                      timeout: float = 15.0,
-                                      threshold: float = 0.8) -> bool:
+def wait_and_click_template_from_path(
+    path: str,
+    step_name: str,
+    timeout: float = 15.0,
+    threshold: float = LETTER_MATCH_THRESHOLD,
+) -> bool:
     start = time.time()
     while time.time() - start < timeout and not worker_stop.is_set():
         score, x, y = match_template_from_path(path)
@@ -427,6 +477,52 @@ def wait_and_click_template_from_path(path: str, step_name: str,
             return True
         time.sleep(0.5)
     return False
+
+
+def load_uniform_letter_image(path: str, box_size: int = LETTER_IMAGE_SIZE):
+    if Image is not None and ImageTk is not None:
+        try:
+            with Image.open(path) as pil_img:
+                pil_img = pil_img.convert("RGBA")
+                fitted = ImageOps.contain(pil_img, (box_size, box_size))
+                background = Image.new("RGBA", (box_size, box_size), (0, 0, 0, 0))
+                offset = (
+                    (box_size - fitted.width) // 2,
+                    (box_size - fitted.height) // 2,
+                )
+                background.paste(fitted, offset, fitted)
+                return ImageTk.PhotoImage(background)
+        except Exception as exc:
+            log(f"加载图片失败：{path}，{exc}")
+
+    try:
+        tk_img = tk.PhotoImage(file=path)
+    except Exception as exc:
+        log(f"加载图片失败：{path}，{exc}")
+        return None
+
+    max_side = max(tk_img.width(), tk_img.height())
+    if max_side > box_size:
+        scale = max(1, (max_side + box_size - 1) // box_size)
+        tk_img = tk_img.subsample(scale, scale)
+
+    canvas = tk.PhotoImage(width=box_size, height=box_size)
+    offset_x = max((box_size - tk_img.width()) // 2, 0)
+    offset_y = max((box_size - tk_img.height()) // 2, 0)
+    canvas.tk.call(
+        canvas,
+        "copy",
+        tk_img,
+        "-from",
+        0,
+        0,
+        tk_img.width(),
+        tk_img.height(),
+        "-to",
+        offset_x,
+        offset_y,
+    )
+    return canvas
 
 
 class UIDMaskManager:
@@ -590,9 +686,15 @@ def load_actions(path: str):
     return acts
 
 
-def play_macro(path: str, label: str,
-               p1: float, p2: float,
-               interrupt_on_exit: bool = False):
+def play_macro(
+    path: str,
+    label: str,
+    p1: float,
+    p2: float,
+    interrupt_on_exit: bool = False,
+    interrupter=None,
+    progress_callback=None,
+):
     """
     EMT 风格高精度回放：
     - 按 actions 里的 time 字段作为绝对时间轴
@@ -629,14 +731,39 @@ def play_macro(path: str, label: str,
                 log(f"{label}：检测到退图界面，提前结束宏。")
                 break
 
+            if interrupter is not None:
+                pause_time = interrupter.run_decrypt_if_needed()
+                if pause_time:
+                    start_time += pause_time
+
             target_time = float(action.get("time", 0.0))
-            elapsed = time.perf_counter() - start_time
-            sleep_time = target_time - elapsed
-            if sleep_time > 0:
-                if sleep_time > 0.001:
-                    time.sleep(max(0, sleep_time - 0.0005))
-                while time.perf_counter() - start_time < target_time:
-                    pass
+            if interrupter is None:
+                elapsed = time.perf_counter() - start_time
+                sleep_time = target_time - elapsed
+                if sleep_time > 0:
+                    if sleep_time > 0.001:
+                        time.sleep(max(0, sleep_time - 0.0005))
+                    while time.perf_counter() - start_time < target_time:
+                        pass
+            else:
+                while True:
+                    elapsed = time.perf_counter() - start_time
+                    sleep_time = target_time - elapsed
+                    if sleep_time <= 0:
+                        break
+                    chunk = min(0.05, max(sleep_time - 0.0005, 0.0))
+                    if chunk > 0:
+                        time.sleep(chunk)
+                    pause_time = interrupter.run_decrypt_if_needed()
+                    if pause_time:
+                        start_time += pause_time
+                while True:
+                    pause_time = interrupter.run_decrypt_if_needed()
+                    if pause_time:
+                        start_time += pause_time
+                        continue
+                    if time.perf_counter() - start_time >= target_time:
+                        break
 
             try:
                 ttype = action.get("type", "key_down")
@@ -655,6 +782,11 @@ def play_macro(path: str, label: str,
             local_progress = (i + 1) / total_actions
             global_p = p1 + local_progress * (p2 - p1)
             report_progress(global_p)
+            if progress_callback is not None:
+                try:
+                    progress_callback(local_progress)
+                except Exception:
+                    pass
 
             percent = int(local_progress * 100)
             if percent - last_progress_percent >= 10:
@@ -672,6 +804,10 @@ def play_macro(path: str, label: str,
         log(f"  执行动作：{executed_count}/{total_actions}（键盘:{keyboard_count}）")
 
     finally:
+        if interrupter is not None:
+            pause_time = interrupter.run_decrypt_if_needed()
+            if pause_time:
+                start_time += pause_time
         pressed = set()
         for act in actions:
             if act.get("type") == "key_down":
@@ -686,6 +822,181 @@ def play_macro(path: str, label: str,
                         keyboard.release(k)
                 except Exception:
                     pass
+
+
+class NoTrickDecryptController:
+    MATCH_THRESHOLD = 0.7
+    CHECK_INTERVAL = 0.4
+
+    def __init__(self, gui, game_dir: str):
+        self.gui = gui
+        self.game_dir = game_dir
+        self.stop_event = threading.Event()
+        self.trigger_lock = threading.Lock()
+        self.detected_entry = None
+        self.detected_score = 0.0
+        self.trigger_consumed = False
+        self.macro_executed = False
+        self.macro_missing = False
+        self.templates = []
+        self.thread = None
+        self.session_started = False
+
+    def start(self) -> bool:
+        if cv2 is None or np is None:
+            log("缺少 opencv/numpy，无法开启无巧手解密监控。")
+            try:
+                self.gui.on_no_trick_unavailable("缺少 opencv/numpy")
+            except Exception:
+                pass
+            return False
+        self.templates = self._load_templates()
+        if not self.templates:
+            self.gui.on_no_trick_no_templates(self.game_dir)
+            return False
+        self.stop_event.clear()
+        self.detected_entry = None
+        self.detected_score = 0.0
+        self.trigger_consumed = False
+        self.macro_executed = False
+        self.macro_missing = False
+        self.session_started = True
+        self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.thread.start()
+        self.gui.on_no_trick_monitor_started(self.templates)
+        return True
+
+    def stop(self):
+        self.stop_event.set()
+        self.session_started = False
+
+    def finish_session(self):
+        if self.thread and self.thread.is_alive():
+            self.stop_event.set()
+            try:
+                self.thread.join(timeout=0.5)
+            except Exception:
+                pass
+        self.session_started = False
+        self.gui.on_no_trick_session_finished(
+            triggered=self.detected_entry is not None,
+            macro_executed=self.macro_executed,
+            macro_missing=self.macro_missing,
+        )
+
+    def run_decrypt_if_needed(self) -> float:
+        if worker_stop.is_set():
+            return 0.0
+        with self.trigger_lock:
+            entry = self.detected_entry
+            score = self.detected_score
+            consumed = self.trigger_consumed
+        if entry is None or consumed:
+            return 0.0
+
+        with self.trigger_lock:
+            if self.trigger_consumed:
+                return 0.0
+            self.trigger_consumed = True
+
+        macro_path = entry.get("json_path")
+        if not macro_path or not os.path.exists(macro_path):
+            log(f"{self.gui.log_prefix} 无巧手解密：缺少对应宏文件 {macro_path}")
+            self.macro_missing = True
+            self.gui.on_no_trick_macro_missing(entry)
+            return 0.0
+
+        start = time.perf_counter()
+        self.gui.on_no_trick_macro_start(entry, score)
+
+        def progress_cb(p):
+            self.gui.on_no_trick_progress(p)
+
+        play_macro(
+            macro_path,
+            f"{self.gui.log_prefix} 无巧手解密 {entry.get('name')}",
+            0.0,
+            0.0,
+            interrupt_on_exit=False,
+            progress_callback=progress_cb,
+        )
+
+        self.macro_executed = True
+        self.gui.on_no_trick_macro_complete(entry)
+        end = time.perf_counter()
+        return max(0.0, end - start)
+
+    def _monitor_loop(self):
+        while not self.stop_event.is_set() and not worker_stop.is_set():
+            try:
+                img = screenshot_game()
+            except Exception as e:
+                log(f"无巧手解密：截图失败 {e}")
+                time.sleep(self.CHECK_INTERVAL)
+                continue
+
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            for entry in self.templates:
+                tpl = entry.get("template")
+                if tpl is None:
+                    continue
+                try:
+                    res = cv2.matchTemplate(gray, tpl, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, _ = cv2.minMaxLoc(res)
+                except Exception as e:
+                    log(f"无巧手解密：匹配 {entry.get('name')} 失败：{e}")
+                    continue
+                if max_val >= self.MATCH_THRESHOLD:
+                    with self.trigger_lock:
+                        self.detected_entry = entry
+                        self.detected_score = max_val
+                    self.gui.on_no_trick_detected(entry, max_val)
+                    self.stop_event.set()
+                    return
+
+            time.sleep(self.CHECK_INTERVAL)
+
+    def _load_templates(self):
+        templates = []
+        if not os.path.isdir(self.game_dir):
+            return templates
+        try:
+            candidates = [
+                f
+                for f in os.listdir(self.game_dir)
+                if f.lower().endswith(".png")
+            ]
+        except Exception as e:
+            log(f"读取 Game 目录失败：{e}")
+            return templates
+
+        def sort_key(name):
+            base = os.path.splitext(name)[0]
+            try:
+                return int(base)
+            except ValueError:
+                return base
+
+        for name in sorted(candidates, key=sort_key):
+            png_path = os.path.join(self.game_dir, name)
+            json_path = os.path.join(
+                self.game_dir, os.path.splitext(name)[0] + ".json"
+            )
+            try:
+                data = np.fromfile(png_path, dtype=np.uint8)
+                tpl = cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
+            except Exception as e:
+                log(f"无巧手解密：读取模板 {png_path} 失败：{e}")
+                tpl = None
+            templates.append(
+                {
+                    "name": name,
+                    "png_path": png_path,
+                    "json_path": json_path,
+                    "template": tpl,
+                }
+            )
+        return templates
 
 
 # ======================================================================
@@ -995,7 +1306,7 @@ class MainGUI:
 class FragmentFarmGUI:
     MAX_LETTERS = 20
 
-    def __init__(self, parent, cfg):
+    def __init__(self, parent, cfg, enable_no_trick_decrypt: bool = False):
         self.parent = parent
         self.cfg = cfg
         self.cfg_key = getattr(self, "cfg_key", "guard_settings")
@@ -1010,6 +1321,8 @@ class FragmentFarmGUI:
         self.log_prefix = getattr(self, "log_prefix", "[碎片]")
         guard_cfg = cfg.get(self.cfg_key, {})
 
+        self.enable_no_trick_decrypt = enable_no_trick_decrypt
+
         self.wave_var = tk.StringVar(value=str(guard_cfg.get("waves", 10)))
         self.timeout_var = tk.StringVar(value=str(guard_cfg.get("timeout", 160)))
         self.auto_loop_var = tk.BooleanVar(value=True)
@@ -1021,6 +1334,29 @@ class FragmentFarmGUI:
         self.hotkey_handle = None
         self._bound_hotkey_key = None
         self.hotkey_label = self.log_prefix
+
+        if self.enable_no_trick_decrypt:
+            self.no_trick_var = tk.BooleanVar(
+                value=bool(guard_cfg.get("no_trick_decrypt", False))
+            )
+            self.no_trick_status_var = tk.StringVar(value="未启用")
+            self.no_trick_progress_var = tk.DoubleVar(value=0.0)
+            self.no_trick_image_ref = None
+            self.no_trick_controller = None
+            self.no_trick_status_frame = None
+            self.no_trick_status_label = None
+            self.no_trick_image_label = None
+            self.no_trick_progress = None
+        else:
+            self.no_trick_var = None
+            self.no_trick_status_var = None
+            self.no_trick_progress_var = None
+            self.no_trick_image_ref = None
+            self.no_trick_controller = None
+            self.no_trick_status_frame = None
+            self.no_trick_status_label = None
+            self.no_trick_image_label = None
+            self.no_trick_progress = None
 
         self.letter_images = []
         self.letter_buttons = []
@@ -1045,6 +1381,8 @@ class FragmentFarmGUI:
         self._load_letters()
         self._update_wave_progress_ui()
         self._bind_hotkey()
+        if self.enable_no_trick_decrypt:
+            self._update_no_trick_ui()
 
     # ---- UI ----
     def _build_ui(self):
@@ -1083,6 +1421,16 @@ class FragmentFarmGUI:
         ttk.Button(hotkey_frame, text="录制热键", command=self._capture_hotkey).pack(side="left", padx=3)
         ttk.Button(hotkey_frame, text="保存设置", command=self._save_settings).pack(side="left", padx=3)
 
+        if self.enable_no_trick_decrypt:
+            toggle_frame = tk.Frame(self.parent)
+            toggle_frame.pack(fill="x", padx=10, pady=(0, 5))
+            tk.Checkbutton(
+                toggle_frame,
+                text="开启无巧手解密",
+                variable=self.no_trick_var,
+                command=self._on_no_trick_toggle,
+            ).pack(anchor="w")
+
         self.frame_letters = tk.LabelFrame(
             self.parent,
             text=f"{self.letter_label}选择（来自 {self.letters_dir_hint}/）",
@@ -1100,6 +1448,7 @@ class FragmentFarmGUI:
 
         frame_macros = tk.LabelFrame(self.parent, text="地图宏脚本（mapA / mapB）")
         frame_macros.pack(fill="x", padx=10, pady=5)
+        frame_macros.grid_columnconfigure(1, weight=1)
 
         tk.Label(frame_macros, text="mapA 宏:").grid(row=0, column=0, sticky="e")
         tk.Entry(frame_macros, textvariable=self.macro_a_var, width=50).grid(row=0, column=1, sticky="w", padx=3)
@@ -1109,12 +1458,41 @@ class FragmentFarmGUI:
         tk.Entry(frame_macros, textvariable=self.macro_b_var, width=50).grid(row=1, column=1, sticky="w", padx=3)
         ttk.Button(frame_macros, text="浏览…", command=self._choose_macro_b).grid(row=1, column=2, padx=3)
 
+        if self.enable_no_trick_decrypt:
+            self.no_trick_status_frame = tk.LabelFrame(self.parent, text="无巧手解密状态")
+            status_inner = tk.Frame(self.no_trick_status_frame)
+            status_inner.pack(fill="x", padx=5, pady=5)
+
+            self.no_trick_status_label = tk.Label(
+                status_inner,
+                textvariable=self.no_trick_status_var,
+                anchor="w",
+                justify="left",
+            )
+            self.no_trick_status_label.pack(fill="x", anchor="w")
+
+            self.no_trick_image_label = tk.Label(
+                self.no_trick_status_frame,
+                relief="sunken",
+                bd=1,
+                bg="#f8f8f8",
+            )
+            self.no_trick_image_label.pack(fill="both", padx=10, pady=(0, 5))
+
+            self.no_trick_progress = ttk.Progressbar(
+                self.no_trick_status_frame,
+                variable=self.no_trick_progress_var,
+                maximum=100.0,
+                mode="determinate",
+            )
+            self.no_trick_progress.pack(fill="x", padx=10, pady=(0, 8))
+
         self.stats_frame = tk.LabelFrame(
             self.parent, text=f"{self.product_label}统计（实时）"
         )
         self.stats_frame.pack(fill="x", padx=10, pady=5)
 
-        self.stat_image_label = tk.Label(self.stats_frame, width=64, height=64, relief="sunken")
+        self.stat_image_label = tk.Label(self.stats_frame, relief="sunken")
         self.stat_image_label.grid(row=0, column=0, rowspan=3, padx=5, pady=5)
 
         self.current_entity_label = tk.Label(
@@ -1195,7 +1573,13 @@ class FragmentFarmGUI:
     # ---- 人物密函 ----
     def _load_letters(self):
         for b in self.letter_buttons:
+            parent = b.master
             b.destroy()
+            if parent not in (None, self.letters_grid):
+                try:
+                    parent.destroy()
+                except Exception:
+                    pass
         self.letter_buttons.clear()
         self.letter_images.clear()
 
@@ -1214,27 +1598,33 @@ class FragmentFarmGUI:
             return
 
         max_per_row = 5
+        for col in range(max_per_row):
+            self.letters_grid.grid_columnconfigure(col, weight=1, uniform="letters")
         for idx, name in enumerate(files):
             full_path = os.path.join(self.letters_dir, name)
-            try:
-                img = tk.PhotoImage(file=full_path)
-                max_side = max(img.width(), img.height())
-                if max_side > 128:
-                    scale = max(1, (max_side + 127) // 128)
-                    img = img.subsample(scale, scale)
-            except Exception:
+            img = load_uniform_letter_image(full_path)
+            if img is None:
                 continue
             self.letter_images.append(img)
             r = idx // max_per_row
             c = idx % max_per_row
-            btn = tk.Button(
+            cell = tk.Frame(
                 self.letters_grid,
+                width=LETTER_IMAGE_SIZE + 8,
+                height=LETTER_IMAGE_SIZE + 8,
+                bd=0,
+                highlightthickness=0,
+            )
+            cell.grid(row=r, column=c, padx=4, pady=4, sticky="nsew")
+            cell.grid_propagate(False)
+            btn = tk.Button(
+                cell,
                 image=img,
                 relief="raised",
                 borderwidth=2,
                 command=lambda p=full_path, b_idx=idx: self._on_letter_clicked(p, b_idx),
             )
-            btn.grid(row=r, column=c, padx=4, pady=4)
+            btn.pack(expand=True, fill="both")
             self.letter_buttons.append(btn)
 
         if self.selected_letter_path:
@@ -1330,6 +1720,249 @@ class FragmentFarmGUI:
             log(f"{self.log_prefix} 热键触发：开始刷{self.product_short_label}。")
             self.start_farming(from_hotkey=True)
 
+    # ---- 无巧手解密 ----
+    def _on_no_trick_toggle(self):
+        if not self.enable_no_trick_decrypt:
+            return
+        if not self.no_trick_var.get():
+            self._stop_no_trick_monitor()
+        self._update_no_trick_ui()
+
+    def _update_no_trick_ui(self):
+        if not self.enable_no_trick_decrypt:
+            return
+        if self.no_trick_var.get():
+            self._ensure_no_trick_frame_visible()
+            if self.no_trick_controller is None:
+                self._set_no_trick_status_direct("等待刷图时识别解密图像…")
+                self._set_no_trick_progress_value(0.0)
+                self._set_no_trick_image(None)
+        else:
+            self._hide_no_trick_frame()
+            self._set_no_trick_status_direct("未启用")
+            self._set_no_trick_progress_value(0.0)
+            self._set_no_trick_image(None)
+
+    def _ensure_no_trick_frame_visible(self):
+        if (
+            not self.enable_no_trick_decrypt
+            or self.no_trick_status_frame is None
+            or self.no_trick_var is None
+        ):
+            return
+        if not self.no_trick_status_frame.winfo_ismapped():
+            self.no_trick_status_frame.pack(fill="x", padx=10, pady=5)
+
+    def _hide_no_trick_frame(self):
+        if not self.enable_no_trick_decrypt or self.no_trick_status_frame is None:
+            return
+        if self.no_trick_status_frame.winfo_manager():
+            self.no_trick_status_frame.pack_forget()
+
+    def _set_no_trick_status_direct(self, text: str):
+        if self.no_trick_status_var is not None:
+            self.no_trick_status_var.set(text)
+
+    def _set_no_trick_progress_value(self, percent: float):
+        if self.no_trick_progress_var is not None:
+            self.no_trick_progress_var.set(max(0.0, min(100.0, percent)))
+
+    def _set_no_trick_image(self, photo):
+        if not self.enable_no_trick_decrypt or self.no_trick_image_label is None:
+            return
+        if photo is None:
+            self.no_trick_image_label.config(image="")
+        else:
+            self.no_trick_image_label.config(image=photo)
+        self.no_trick_image_ref = photo
+
+    def _load_no_trick_preview(self, path: str, max_size: int = 240):
+        if not path or not os.path.exists(path):
+            return None
+        if Image is not None and ImageTk is not None:
+            try:
+                with Image.open(path) as pil_img:
+                    pil_img = pil_img.convert("RGBA")
+                    w, h = pil_img.size
+                    scale = 1.0
+                    if max(w, h) > max_size:
+                        scale = max_size / max(w, h)
+                        pil_img = pil_img.resize(
+                            (
+                                max(1, int(w * scale)),
+                                max(1, int(h * scale)),
+                            ),
+                            Image.LANCZOS,
+                        )
+                    return ImageTk.PhotoImage(pil_img)
+            except Exception:
+                pass
+        try:
+            img = tk.PhotoImage(file=path)
+        except Exception:
+            return None
+        w = max(img.width(), 1)
+        h = max(img.height(), 1)
+        factor = max(1, (max(w, h) + max_size - 1) // max_size)
+        if factor > 1:
+            img = img.subsample(factor, factor)
+        return img
+
+    def _start_no_trick_monitor(self):
+        if not self.enable_no_trick_decrypt or not self.no_trick_var.get():
+            return None
+        controller = NoTrickDecryptController(self, GAME_DIR)
+        if controller.start():
+            self.no_trick_controller = controller
+            return controller
+        return None
+
+    def _stop_no_trick_monitor(self):
+        if not self.enable_no_trick_decrypt:
+            return
+        controller = self.no_trick_controller
+        if controller is not None:
+            controller.stop()
+            controller.finish_session()
+            self.no_trick_controller = None
+
+    def on_no_trick_unavailable(self, reason: str):
+        if not self.enable_no_trick_decrypt:
+            return
+
+        def _():
+            if not self.no_trick_var.get():
+                return
+            self._ensure_no_trick_frame_visible()
+            self._set_no_trick_status_direct(f"无巧手解密不可用：{reason}。")
+            self._set_no_trick_progress_value(0.0)
+            self._set_no_trick_image(None)
+
+        post_to_main_thread(_)
+
+    def on_no_trick_no_templates(self, game_dir: str):
+        if not self.enable_no_trick_decrypt:
+            return
+
+        def _():
+            if not self.no_trick_var.get():
+                return
+            self._ensure_no_trick_frame_visible()
+            self._set_no_trick_status_direct("Game 文件夹中未找到解密图像模板，请放置 1.png 等文件。")
+            self._set_no_trick_progress_value(0.0)
+            self._set_no_trick_image(None)
+
+        post_to_main_thread(_)
+
+    def on_no_trick_monitor_started(self, templates):
+        if not self.enable_no_trick_decrypt:
+            return
+        total = len(templates)
+        valid = sum(1 for t in templates if t.get("template") is not None)
+
+        def _():
+            if not self.no_trick_var.get():
+                return
+            self._ensure_no_trick_frame_visible()
+            if valid <= 0:
+                self._set_no_trick_status_direct("Game 模板加载失败，无法识别解密图像。")
+            else:
+                self._set_no_trick_status_direct(
+                    f"等待识别解密图像（共 {total} 张模板）…"
+                )
+            self._set_no_trick_progress_value(0.0)
+            self._set_no_trick_image(None)
+
+        post_to_main_thread(_)
+
+    def on_no_trick_detected(self, entry, score: float):
+        if not self.enable_no_trick_decrypt:
+            return
+
+        def _():
+            if not self.no_trick_var.get():
+                return
+            self._ensure_no_trick_frame_visible()
+            name = entry.get("name", "")
+            self._set_no_trick_status_direct(
+                f"已经识别到解密图像 - {name}，正在解密…"
+            )
+            photo = self._load_no_trick_preview(entry.get("png_path"))
+            self._set_no_trick_image(photo)
+            self._set_no_trick_progress_value(0.0)
+
+        post_to_main_thread(_)
+
+    def on_no_trick_macro_start(self, entry, score: float):
+        if not self.enable_no_trick_decrypt:
+            return
+
+        def _():
+            if not self.no_trick_var.get():
+                return
+            self._set_no_trick_progress_value(0.0)
+
+        post_to_main_thread(_)
+
+    def on_no_trick_progress(self, progress: float):
+        if not self.enable_no_trick_decrypt:
+            return
+
+        def _():
+            if not self.no_trick_var.get():
+                return
+            self._set_no_trick_progress_value(progress * 100.0)
+
+        post_to_main_thread(_)
+
+    def on_no_trick_macro_complete(self, entry):
+        if not self.enable_no_trick_decrypt:
+            return
+
+        def _():
+            if not self.no_trick_var.get():
+                return
+            self._set_no_trick_status_direct("解密完成，恢复原宏执行。")
+            self._set_no_trick_progress_value(100.0)
+
+        post_to_main_thread(_)
+
+    def on_no_trick_macro_missing(self, entry):
+        if not self.enable_no_trick_decrypt:
+            return
+
+        def _():
+            if not self.no_trick_var.get():
+                return
+            base = os.path.splitext(entry.get("name", ""))[0]
+            self._set_no_trick_status_direct(
+                f"未找到 {base}.json，跳过无巧手解密。"
+            )
+            self._set_no_trick_progress_value(0.0)
+            self._set_no_trick_image(None)
+
+        post_to_main_thread(_)
+
+    def on_no_trick_session_finished(self, triggered: bool, macro_executed: bool, macro_missing: bool):
+        if not self.enable_no_trick_decrypt:
+            return
+
+        def _():
+            if not self.no_trick_var.get():
+                return
+            if not triggered:
+                self._set_no_trick_status_direct("本次未识别到解密图像。")
+                self._set_no_trick_progress_value(0.0)
+                self._set_no_trick_image(None)
+            elif macro_executed:
+                self._set_no_trick_status_direct("解密完成，继续执行原宏。")
+                self._set_no_trick_progress_value(100.0)
+            elif macro_missing:
+                # 状态已在 on_no_trick_macro_missing 中更新
+                pass
+
+        post_to_main_thread(_)
+
     def _save_settings(self):
         try:
             waves = int(self.wave_var.get().strip())
@@ -1349,6 +1982,8 @@ class FragmentFarmGUI:
         section["waves"] = waves
         section["timeout"] = timeout
         section["hotkey"] = self.hotkey_var.get().strip()
+        if self.enable_no_trick_decrypt and self.no_trick_var is not None:
+            section["no_trick_decrypt"] = bool(self.no_trick_var.get())
         self._bind_hotkey()
         save_config(self.cfg)
         messagebox.showinfo("提示", "设置已保存。")
@@ -1599,6 +2234,8 @@ class FragmentFarmGUI:
         finally:
             worker_stop.clear()
             round_running_lock.release()
+            if self.enable_no_trick_decrypt:
+                self._stop_no_trick_monitor()
             self.is_farming = False
             self._update_stats_ui()
 
@@ -1652,7 +2289,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 首次：点击{self.letter_label}",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 首次：未能点击{self.letter_label}。")
             return False
@@ -1660,7 +2297,7 @@ class FragmentFarmGUI:
             BTN_CONFIRM_LETTER,
             f"{self.log_prefix} 首次：确认选择",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 首次：未能点击 确认选择.png。")
             return False
@@ -1683,7 +2320,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 循环重开：点击{self.letter_label}",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 循环重开：未能点击{self.letter_label}。")
             return False
@@ -1691,12 +2328,30 @@ class FragmentFarmGUI:
             BTN_CONFIRM_LETTER,
             f"{self.log_prefix} 循环重开：确认选择",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 循环重开：未能点击 确认选择.png。")
             return False
         self._increment_wave_progress()
         return self._map_detect_and_run_macros()
+
+    def _execute_map_macro(self, macro_path: str, label: str):
+        controller = self._start_no_trick_monitor()
+        try:
+            play_macro(
+                macro_path,
+                f"{self.log_prefix} {label}",
+                0.0,
+                0.3,
+                interrupt_on_exit=False,
+                interrupter=controller,
+            )
+        finally:
+            if controller is not None:
+                controller.stop()
+                controller.finish_session()
+                if self.no_trick_controller is controller:
+                    self.no_trick_controller = None
 
     def _map_detect_and_run_macros(self) -> bool:
         """
@@ -1750,7 +2405,7 @@ class FragmentFarmGUI:
         while time.time() - t0 < 2.0 and not worker_stop.is_set():
             time.sleep(0.1)
 
-        play_macro(macro_path, f"{self.log_prefix} {label}", 0.0, 0.3, interrupt_on_exit=False)
+        self._execute_map_macro(macro_path, label)
         return True
 
     # ---- 掉落界面检测 & 掉落识别 ----
@@ -1904,7 +2559,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 下一波：点击{self.letter_label}",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 下一波：未能点击{self.letter_label}。")
             return False
@@ -1912,7 +2567,7 @@ class FragmentFarmGUI:
             BTN_CONFIRM_LETTER,
             f"{self.log_prefix} 下一波：确认选择",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 下一波：未能点击 确认选择.png。")
             return False
@@ -1950,7 +2605,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 防卡死：点击{self.letter_label}",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 防卡死：未能点击{self.letter_label}。")
             return False
@@ -2081,7 +2736,7 @@ class ExpelFragmentGUI:
         )
         self.stats_frame.pack(fill="x", padx=10, pady=5)
 
-        self.stat_image_label = tk.Label(self.stats_frame, width=64, height=64, relief="sunken")
+        self.stat_image_label = tk.Label(self.stats_frame, relief="sunken")
         self.stat_image_label.grid(row=0, column=0, rowspan=3, padx=5, pady=5)
 
         self.current_entity_label = tk.Label(
@@ -2149,7 +2804,13 @@ class ExpelFragmentGUI:
 
     def _load_letters(self):
         for b in self.letter_buttons:
+            parent = b.master
             b.destroy()
+            if parent not in (None, self.letters_grid):
+                try:
+                    parent.destroy()
+                except Exception:
+                    pass
         self.letter_buttons.clear()
         self.letter_images.clear()
 
@@ -2168,27 +2829,33 @@ class ExpelFragmentGUI:
             return
 
         max_per_row = 5
+        for col in range(max_per_row):
+            self.letters_grid.grid_columnconfigure(col, weight=1, uniform="expel_letters")
         for idx, name in enumerate(files):
             full_path = os.path.join(self.letters_dir, name)
-            try:
-                img = tk.PhotoImage(file=full_path)
-                max_side = max(img.width(), img.height())
-                if max_side > 128:
-                    scale = max(1, (max_side + 127) // 128)
-                    img = img.subsample(scale, scale)
-            except Exception:
+            img = load_uniform_letter_image(full_path)
+            if img is None:
                 continue
             self.letter_images.append(img)
             r = idx // max_per_row
             c = idx % max_per_row
-            btn = tk.Button(
+            cell = tk.Frame(
                 self.letters_grid,
+                width=LETTER_IMAGE_SIZE + 8,
+                height=LETTER_IMAGE_SIZE + 8,
+                bd=0,
+                highlightthickness=0,
+            )
+            cell.grid(row=r, column=c, padx=4, pady=4, sticky="nsew")
+            cell.grid_propagate(False)
+            btn = tk.Button(
+                cell,
                 image=img,
                 relief="raised",
                 borderwidth=2,
                 command=lambda p=full_path, b_idx=idx: self._on_letter_clicked(p, b_idx),
             )
-            btn.grid(row=r, column=c, padx=4, pady=4)
+            btn.pack(expand=True, fill="both")
             self.letter_buttons.append(btn)
 
         if self.selected_letter_path:
@@ -2524,11 +3191,16 @@ class ExpelFragmentGUI:
             self.selected_letter_path,
             f"{prefix}：点击{self.letter_label}",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{prefix}：未能点击{self.letter_label}。")
             return False
-        if not wait_and_click_template(BTN_CONFIRM_LETTER, f"{prefix}：确认选择", 20.0, 0.8):
+        if not wait_and_click_template(
+            BTN_CONFIRM_LETTER,
+            f"{prefix}：确认选择",
+            20.0,
+            LETTER_MATCH_THRESHOLD,
+        ):
             log(f"{prefix}：未能点击 确认选择.png。")
             return False
         return True
@@ -2706,7 +3378,7 @@ class ModFragmentGUI(FragmentFarmGUI):
         self.letters_dir_hint = "mod"
         self.preview_dir_hint = "mod"
         self.log_prefix = "[MOD]"
-        super().__init__(parent, cfg)
+        super().__init__(parent, cfg, enable_no_trick_decrypt=True)
 
 
 class ModExpelGUI(ExpelFragmentGUI):
@@ -2741,22 +3413,28 @@ def main():
 
     try:
         base_h = 1080
-        scale = max(1.0, min(1.5, sh / base_h))
-        root.tk.call("tk", "scaling", scale)
+        dpi_scale = max(0.85, min(1.5, sh / base_h))
+        root.tk.call("tk", "scaling", dpi_scale)
     except Exception:
         pass
 
-    win_w = min(1350, int(sw * 0.95))
-    win_h = min(900, int(sh * 0.95))
-    pos_x = (sw - win_w) // 2
-    pos_y = (sh - win_h) // 2
+    base_w, base_h = 1350, 900
+    margin_ratio = 0.92
+    avail_w = int(sw * margin_ratio)
+    avail_h = int(sh * margin_ratio)
+    scale_ratio = min(1.0, avail_w / base_w, avail_h / base_h)
+    win_w = max(min(base_w, avail_w), min(avail_w, 1000))
+    win_h = max(min(base_h, avail_h), min(avail_h, 650))
+    win_w = int(max(win_w, base_w * scale_ratio))
+    win_h = int(max(win_h, base_h * scale_ratio))
+
+    win_w = min(win_w, sw)
+    win_h = min(win_h, sh)
+
+    pos_x = max((sw - win_w) // 2, 0)
+    pos_y = max((sh - win_h) // 2, 0)
     root.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
-    root.minsize(1000, 650)
-
-    try:
-        root.state("zoomed")
-    except Exception:
-        pass
+    root.minsize(min(win_w, 1000), min(win_h, 650))
 
     toolbar = ttk.Frame(root)
     toolbar.pack(fill="x", padx=10, pady=5)
@@ -2782,7 +3460,7 @@ def main():
 
     frame_guard = ttk.Frame(fragment_notebook)
     fragment_notebook.add(frame_guard, text="探险无尽血清")
-    guard_gui = FragmentFarmGUI(frame_guard, cfg)
+    guard_gui = FragmentFarmGUI(frame_guard, cfg, enable_no_trick_decrypt=True)
     register_fragment_app(guard_gui)
 
     frame_expel = ttk.Frame(fragment_notebook)
