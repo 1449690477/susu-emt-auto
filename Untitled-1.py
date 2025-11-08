@@ -32,11 +32,30 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 SP_DIR = os.path.join(DATA_DIR, "SP")
 UID_DIR = os.path.join(DATA_DIR, "UID")
 
+MOD_DIR = os.path.join(DATA_DIR, "mod")
+MOD_TEMPLATE_DIR = os.path.join(MOD_DIR, "templates")
+MOD_TEMPLATE_LETTERS_DIR = os.path.join(MOD_DIR, "templates_letters")
+MOD_TEMPLATE_DROPS_DIR = os.path.join(MOD_DIR, "templates_drops")
+MOD_SP_DIR = os.path.join(MOD_DIR, "SP")
+MOD_UID_DIR = os.path.join(MOD_DIR, "UID")
+
 # 新项目：人物密函图片 / 掉落物图片
 TEMPLATE_LETTERS_DIR = os.path.join(DATA_DIR, "templates_letters")
 TEMPLATE_DROPS_DIR = os.path.join(DATA_DIR, "templates_drops")
 
-for d in (TEMPLATE_DIR, SCRIPTS_DIR, TEMPLATE_LETTERS_DIR, TEMPLATE_DROPS_DIR, SP_DIR, UID_DIR):
+for d in (
+    TEMPLATE_DIR,
+    SCRIPTS_DIR,
+    TEMPLATE_LETTERS_DIR,
+    TEMPLATE_DROPS_DIR,
+    SP_DIR,
+    UID_DIR,
+    MOD_TEMPLATE_DIR,
+    MOD_TEMPLATE_LETTERS_DIR,
+    MOD_TEMPLATE_DROPS_DIR,
+    MOD_SP_DIR,
+    MOD_UID_DIR,
+):
     os.makedirs(d, exist_ok=True)
 
 # ---------- 第三方库 ----------
@@ -76,6 +95,16 @@ DEFAULT_CONFIG = {
         "hotkey": "",
     },
     "expel_settings": {
+        "waves": 10,
+        "timeout": 160,
+        "hotkey": "",
+    },
+    "mod_guard_settings": {
+        "waves": 10,
+        "timeout": 160,
+        "hotkey": "",
+    },
+    "mod_expel_settings": {
         "waves": 10,
         "timeout": 160,
         "hotkey": "",
@@ -978,7 +1007,16 @@ class FragmentFarmGUI:
     def __init__(self, parent, cfg):
         self.parent = parent
         self.cfg = cfg
-        self.cfg_key = "guard_settings"
+        self.cfg_key = getattr(self, "cfg_key", "guard_settings")
+        self.letter_label = getattr(self, "letter_label", "人物密函")
+        self.product_label = getattr(self, "product_label", "人物碎片")
+        self.product_short_label = getattr(self, "product_short_label", "碎片")
+        self.entity_label = getattr(self, "entity_label", "人物")
+        self.letters_dir = getattr(self, "letters_dir", TEMPLATE_LETTERS_DIR)
+        self.letters_dir_hint = getattr(self, "letters_dir_hint", "templates_letters")
+        self.templates_dir_hint = getattr(self, "templates_dir_hint", "templates")
+        self.preview_dir_hint = getattr(self, "preview_dir_hint", "SP")
+        self.log_prefix = getattr(self, "log_prefix", "[碎片]")
         guard_cfg = cfg.get(self.cfg_key, {})
 
         self.wave_var = tk.StringVar(value=str(guard_cfg.get("waves", 10)))
@@ -991,7 +1029,7 @@ class FragmentFarmGUI:
         self.macro_b_var = tk.StringVar(value="")
         self.hotkey_handle = None
         self._bound_hotkey_key = None
-        self.hotkey_label = "[碎片]"
+        self.hotkey_label = self.log_prefix
 
         self.letter_images = []
         self.letter_buttons = []
@@ -1005,8 +1043,8 @@ class FragmentFarmGUI:
         self.run_start_time = None
         self.is_farming = False
         self.time_str_var = tk.StringVar(value="00:00:00")
-        self.rate_str_var = tk.StringVar(value="0.00 碎片/波")
-        self.eff_str_var = tk.StringVar(value="0.00 碎片/小时")
+        self.rate_str_var = tk.StringVar(value=f"0.00 {self.product_short_label}/波")
+        self.eff_str_var = tk.StringVar(value=f"0.00 {self.product_short_label}/小时")
         self.wave_progress_total = 0
         self.wave_progress_count = 0
         self.wave_progress_var = tk.DoubleVar(value=0.0)
@@ -1046,19 +1084,28 @@ class FragmentFarmGUI:
 
         hotkey_frame = tk.Frame(self.parent)
         hotkey_frame.pack(fill="x", padx=10, pady=5)
-        tk.Label(hotkey_frame, text="刷碎片热键:").pack(side="left")
+        self.hotkey_label_widget = tk.Label(
+            hotkey_frame, text=f"刷{self.product_short_label}热键:"
+        )
+        self.hotkey_label_widget.pack(side="left")
         tk.Entry(hotkey_frame, textvariable=self.hotkey_var, width=20).pack(side="left", padx=5)
         ttk.Button(hotkey_frame, text="录制热键", command=self._capture_hotkey).pack(side="left", padx=3)
         ttk.Button(hotkey_frame, text="保存设置", command=self._save_settings).pack(side="left", padx=3)
 
-        frame_letters = tk.LabelFrame(self.parent, text="人物密函选择（来自 templates_letters/）")
-        frame_letters.pack(fill="both", expand=True, padx=10, pady=5)
+        self.frame_letters = tk.LabelFrame(
+            self.parent,
+            text=f"{self.letter_label}选择（来自 {self.letters_dir_hint}/）",
+        )
+        self.frame_letters.pack(fill="both", expand=True, padx=10, pady=5)
 
-        self.letters_grid = tk.Frame(frame_letters)
+        self.letters_grid = tk.Frame(self.frame_letters)
         self.letters_grid.pack(fill="both", expand=True, padx=5, pady=5)
 
-        self.selected_label_var = tk.StringVar(value="当前未选择人物密函")
-        tk.Label(frame_letters, textvariable=self.selected_label_var, fg="#0080ff").pack(anchor="w", padx=5, pady=3)
+        self.selected_label_var = tk.StringVar(value=f"当前未选择{self.letter_label}")
+        self.selected_label_widget = tk.Label(
+            self.frame_letters, textvariable=self.selected_label_var, fg="#0080ff"
+        )
+        self.selected_label_widget.pack(anchor="w", padx=5, pady=3)
 
         frame_macros = tk.LabelFrame(self.parent, text="地图宏脚本（mapA / mapB）")
         frame_macros.pack(fill="x", padx=10, pady=5)
@@ -1071,27 +1118,39 @@ class FragmentFarmGUI:
         tk.Entry(frame_macros, textvariable=self.macro_b_var, width=50).grid(row=1, column=1, sticky="w", padx=3)
         ttk.Button(frame_macros, text="浏览…", command=self._choose_macro_b).grid(row=1, column=2, padx=3)
 
-        stats = tk.LabelFrame(self.parent, text="人物碎片统计（实时）")
-        stats.pack(fill="x", padx=10, pady=5)
+        self.stats_frame = tk.LabelFrame(
+            self.parent, text=f"{self.product_label}统计（实时）"
+        )
+        self.stats_frame.pack(fill="x", padx=10, pady=5)
 
-        self.stat_image_label = tk.Label(stats, width=64, height=64, relief="sunken")
+        self.stat_image_label = tk.Label(self.stats_frame, width=64, height=64, relief="sunken")
         self.stat_image_label.grid(row=0, column=0, rowspan=3, padx=5, pady=5)
 
-        tk.Label(stats, text="当前人物：").grid(row=0, column=1, sticky="e")
-        tk.Label(stats, textvariable=self.stat_name_var).grid(row=0, column=2, sticky="w")
+        self.current_entity_label = tk.Label(
+            self.stats_frame, text=f"当前{self.entity_label}："
+        )
+        self.current_entity_label.grid(row=0, column=1, sticky="e")
+        tk.Label(self.stats_frame, textvariable=self.stat_name_var).grid(row=0, column=2, sticky="w")
 
-        tk.Label(stats, text="累计碎片：").grid(row=1, column=1, sticky="e")
-        tk.Label(stats, textvariable=self.fragment_count_var,
-                 font=("Microsoft YaHei", 12, "bold"), fg="#ff6600").grid(row=1, column=2, sticky="w")
+        self.total_product_label = tk.Label(
+            self.stats_frame, text=f"累计{self.product_label}："
+        )
+        self.total_product_label.grid(row=1, column=1, sticky="e")
+        tk.Label(
+            self.stats_frame,
+            textvariable=self.fragment_count_var,
+            font=("Microsoft YaHei", 12, "bold"),
+            fg="#ff6600",
+        ).grid(row=1, column=2, sticky="w")
 
-        tk.Label(stats, text="运行时间：").grid(row=0, column=3, sticky="e")
-        tk.Label(stats, textvariable=self.time_str_var).grid(row=0, column=4, sticky="w")
+        tk.Label(self.stats_frame, text="运行时间：").grid(row=0, column=3, sticky="e")
+        tk.Label(self.stats_frame, textvariable=self.time_str_var).grid(row=0, column=4, sticky="w")
 
-        tk.Label(stats, text="平均掉落：").grid(row=1, column=3, sticky="e")
-        tk.Label(stats, textvariable=self.rate_str_var).grid(row=1, column=4, sticky="w")
+        tk.Label(self.stats_frame, text="平均掉落：").grid(row=1, column=3, sticky="e")
+        tk.Label(self.stats_frame, textvariable=self.rate_str_var).grid(row=1, column=4, sticky="w")
 
-        tk.Label(stats, text="效率：").grid(row=2, column=3, sticky="e")
-        tk.Label(stats, textvariable=self.eff_str_var).grid(row=2, column=4, sticky="w")
+        tk.Label(self.stats_frame, text="效率：").grid(row=2, column=3, sticky="e")
+        tk.Label(self.stats_frame, textvariable=self.eff_str_var).grid(row=2, column=4, sticky="w")
 
         ensure_goal_progress_style()
         progress_box = tk.LabelFrame(self.parent, text="轮次进度")
@@ -1106,32 +1165,35 @@ class FragmentFarmGUI:
 
         ctrl = tk.Frame(self.parent)
         ctrl.pack(fill="x", padx=10, pady=5)
-        self.start_btn = ttk.Button(ctrl, text="开始刷碎片", command=lambda: self.start_farming())
+        self.start_btn = ttk.Button(
+            ctrl, text=f"开始刷{self.product_short_label}", command=lambda: self.start_farming()
+        )
         self.start_btn.pack(side="left", padx=3)
         self.stop_btn = ttk.Button(ctrl, text="停止", command=lambda: self.stop_farming())
         self.stop_btn.pack(side="left", padx=3)
 
-        log_frame = tk.LabelFrame(self.parent, text="人物碎片日志")
-        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        self.log_text = tk.Text(log_frame, height=10)
+        self.log_frame = tk.LabelFrame(self.parent, text=f"{self.product_label}日志")
+        self.log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.log_text = tk.Text(self.log_frame, height=10)
         self.log_text.pack(side="left", fill="both", expand=True)
-        sb = tk.Scrollbar(log_frame, command=self.log_text.yview)
+        sb = tk.Scrollbar(self.log_frame, command=self.log_text.yview)
         sb.pack(side="right", fill="y")
         self.log_text.config(yscrollcommand=sb.set)
 
-        tip = tk.Label(
+        tip_text = (
+            "提示：\n"
+            f"1. {self.letter_label}图片放入 {self.letters_dir_hint}/ 目录，数量不限，本界面最多显示前 20 张。\n"
+            f"2. 若需要展示{self.product_label}预览，可在 {self.preview_dir_hint}/ 目录放入与{self.letter_label}同名的 1.png / 2.png 等图片。\n"
+            f"3. 按钮图（继续挑战/确认选择/撤退/mapa/mapb/G/Q/exit_step1）放在 {self.templates_dir_hint}/ 目录。\n"
+        )
+        self.tip_label = tk.Label(
             self.parent,
-            text=(
-                "提示：\n"
-                "1. 人物密函图片放入 templates_letters/ 目录，数量不限，本界面最多显示前 20 张。\n"
-                "2. 若需要展示人物碎片预览，可在 SP/ 目录放入与人物密函同名的 1.png / 2.png 等图片。\n"
-                "3. 按钮图（继续挑战/确认选择/撤退/mapa/mapb/G/Q/exit_step1）放在 templates/ 目录。\n"
-            ),
+            text=tip_text,
             fg="#666666",
             anchor="w",
             justify="left",
         )
-        tip.pack(fill="x", padx=10, pady=(0, 8))
+        self.tip_label.pack(fill="x", padx=10, pady=(0, 8))
 
     # ---- 日志 ----
     def log(self, msg: str):
@@ -1147,7 +1209,7 @@ class FragmentFarmGUI:
         self.letter_images.clear()
 
         files = []
-        for name in os.listdir(TEMPLATE_LETTERS_DIR):
+        for name in os.listdir(self.letters_dir):
             low = name.lower()
             if low.endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp")):
                 files.append(name)
@@ -1155,12 +1217,14 @@ class FragmentFarmGUI:
         files = files[: self.MAX_LETTERS]
 
         if not files:
-            self.selected_label_var.set("当前未选择人物密函（templates_letters/ 目录为空）")
+            self.selected_label_var.set(
+                f"当前未选择{self.letter_label}（{self.letters_dir_hint}/ 目录为空）"
+            )
             return
 
         max_per_row = 5
         for idx, name in enumerate(files):
-            full_path = os.path.join(TEMPLATE_LETTERS_DIR, name)
+            full_path = os.path.join(self.letters_dir, name)
             try:
                 img = tk.PhotoImage(file=full_path)
                 if img.width() > 128 or img.height() > 128:
@@ -1189,12 +1253,12 @@ class FragmentFarmGUI:
                 self._highlight_button(cur_idx)
             except ValueError:
                 self.selected_letter_path = None
-                self.selected_label_var.set("当前未选择人物密函")
+                self.selected_label_var.set(f"当前未选择{self.letter_label}")
 
     def _on_letter_clicked(self, path: str, idx: int):
         self.selected_letter_path = path
         base = os.path.basename(path)
-        self.selected_label_var.set(f"当前选择人物密函：{base}")
+        self.selected_label_var.set(f"当前选择{self.letter_label}：{base}")
         self._highlight_button(idx)
         self.stat_name_var.set(base)
         self.stat_image = self.letter_images[idx]
@@ -1217,7 +1281,7 @@ class FragmentFarmGUI:
             try:
                 hk = keyboard.read_hotkey(suppress=False)
             except Exception as e:
-                log(f"[碎片] 录制热键失败：{e}")
+                log(f"{self.log_prefix} 录制热键失败：{e}")
                 return
             post_to_main_thread(lambda: self._set_hotkey(hk))
 
@@ -1250,13 +1314,13 @@ class FragmentFarmGUI:
                 self._on_hotkey_trigger,
             )
         except Exception as e:
-            log(f"[碎片] 绑定热键失败：{e}")
+            log(f"{self.log_prefix} 绑定热键失败：{e}")
             messagebox.showerror("错误", f"绑定热键失败：{e}")
             return
 
         self.hotkey_handle = handle
         self._bound_hotkey_key = key
-        log(f"[碎片] 已绑定热键：{key}")
+        log(f"{self.log_prefix} 已绑定热键：{key}")
 
     def _on_hotkey_trigger(self):
         post_to_main_thread(self._handle_hotkey_if_active)
@@ -1269,10 +1333,10 @@ class FragmentFarmGUI:
 
     def _toggle_by_hotkey(self):
         if self.is_farming:
-            log("[碎片] 热键触发：请求停止刷碎片。")
+            log(f"{self.log_prefix} 热键触发：请求停止刷{self.product_short_label}。")
             self.stop_farming(from_hotkey=True)
         else:
-            log("[碎片] 热键触发：开始刷碎片。")
+            log(f"{self.log_prefix} 热键触发：开始刷{self.product_short_label}。")
             self.start_farming(from_hotkey=True)
 
     def _save_settings(self):
@@ -1320,7 +1384,7 @@ class FragmentFarmGUI:
     # ---- 控制 ----
     def start_farming(self, from_hotkey: bool = False):
         if not self.selected_letter_path:
-            messagebox.showwarning("提示", "请先选择一个人物密函。")
+            messagebox.showwarning("提示", f"请先选择一个{self.letter_label}。")
             return
 
         try:
@@ -1370,14 +1434,17 @@ class FragmentFarmGUI:
         t.start()
 
         if from_hotkey:
-            log("[碎片] 热键启动刷碎片成功。")
+            log(f"{self.log_prefix} 热键启动刷{self.product_short_label}成功。")
 
     def stop_farming(self, from_hotkey: bool = False):
         worker_stop.set()
         if not from_hotkey:
-            messagebox.showinfo("提示", "已请求停止刷碎片，本波结束后将自动退出。")
+            messagebox.showinfo(
+                "提示",
+                f"已请求停止刷{self.product_short_label}，本波结束后将自动退出。",
+            )
         else:
-            log("[碎片] 热键停止请求已发送，等待当前波结束。")
+            log(f"{self.log_prefix} 热键停止请求已发送，等待当前波结束。")
 
     # ---- 统计 ----
     def _add_fragments(self, delta: int):
@@ -1400,12 +1467,12 @@ class FragmentFarmGUI:
             rate = self.fragment_count / self.finished_waves
         else:
             rate = 0.0
-        self.rate_str_var.set(f"{rate:.2f} 碎片/波")
+        self.rate_str_var.set(f"{rate:.2f} {self.product_short_label}/波")
         if elapsed > 0:
             eff = self.fragment_count / (elapsed / 3600.0)
         else:
             eff = 0.0
-        self.eff_str_var.set(f"{eff:.2f} 碎片/小时")
+        self.eff_str_var.set(f"{eff:.2f} {self.product_short_label}/小时")
 
     def _stats_timer(self):
         if not self.is_farming:
@@ -1447,9 +1514,12 @@ class FragmentFarmGUI:
     # ---- 核心刷本流程 ----
     def _farm_worker(self, total_waves: int):
         try:
-            log("===== 人物碎片刷取 开始 =====")
+            log(f"===== {self.product_label}刷取 开始 =====")
             if not init_game_region():
-                messagebox.showerror("错误", "未找到『二重螺旋』窗口，无法开始刷碎片。")
+                messagebox.showerror(
+                    "错误",
+                    f"未找到『二重螺旋』窗口，无法开始刷{self.product_short_label}。",
+                )
                 return
 
             first_session = True
@@ -1459,7 +1529,7 @@ class FragmentFarmGUI:
                 auto_loop = self.auto_loop_var.get()
                 session_index += 1
                 self._reset_wave_progress(total_waves)
-                log(f"[碎片] === 开始第 {session_index} 趟无尽 ===")
+                log(f"{self.log_prefix} === 开始第 {session_index} 趟无尽 ===")
 
                 if first_session:
                     if not self._enter_first_wave_and_setup():
@@ -1467,22 +1537,24 @@ class FragmentFarmGUI:
                     first_session = False
                 else:
                     if not self._restart_from_lobby_after_retreat():
-                        log("[碎片] 循环重开失败，结束刷取。")
+                        log(f"{self.log_prefix} 循环重开失败，结束刷取。")
                         break
 
                 current_wave = 1
                 need_next_session = False
 
                 while current_wave <= total_waves and not worker_stop.is_set():
-                    log(f"[碎片] 开始第 {current_wave} 波战斗挂机…")
+                    log(f"{self.log_prefix} 开始第 {current_wave} 波战斗挂机…")
                     result = self._battle_and_loot(max_wait=self.timeout_seconds)
                     if worker_stop.is_set():
                         break
 
                     if result == "timeout":
-                        log(f"[碎片] 第 {current_wave} 波判定卡死，执行防卡死逻辑…")
+                        log(
+                            f"{self.log_prefix} 第 {current_wave} 波判定卡死，执行防卡死逻辑…"
+                        )
                         if not self._anti_stuck_and_reset():
-                            log("[碎片] 防卡死失败，结束刷取。")
+                            log(f"{self.log_prefix} 防卡死失败，结束刷取。")
                             need_next_session = False
                             break
                         # 防卡死后会重新地图识别+宏，继续当前波
@@ -1490,25 +1562,29 @@ class FragmentFarmGUI:
 
                     elif result == "ok":
                         self.finished_waves += 1
-                        log(f"[碎片] 第 {current_wave} 波战斗完成。")
+                        log(f"{self.log_prefix} 第 {current_wave} 波战斗完成。")
 
                         if current_wave == total_waves:
                             if auto_loop:
                                 self._force_wave_progress_complete()
-                                log("[碎片] 波数已满，已开启循环，撤退并准备下一趟。")
+                                log(
+                                    f"{self.log_prefix} 波数已满，已开启循环，撤退并准备下一趟。"
+                                )
                                 self._retreat_only()
                                 need_next_session = True
                                 break
                             else:
                                 self._force_wave_progress_complete()
-                                log("[碎片] 波数已满，未开启循环，撤退并结束。")
+                                log(
+                                    f"{self.log_prefix} 波数已满，未开启循环，撤退并结束。"
+                                )
                                 self._retreat_only()
                                 need_next_session = False
                                 worker_stop.set()
                                 break
                         else:
                             if not self._enter_next_wave_without_map():
-                                log("[碎片] 进入下一波失败，结束刷取。")
+                                log(f"{self.log_prefix} 进入下一波失败，结束刷取。")
                                 need_next_session = False
                                 worker_stop.set()
                                 break
@@ -1524,10 +1600,10 @@ class FragmentFarmGUI:
                 if not auto_loop or not need_next_session:
                     break
 
-            log("===== 人物碎片刷取 结束 =====")
+            log(f"===== {self.product_label}刷取 结束 =====")
 
         except Exception as e:
-            log(f"[碎片] 后台线程异常：{e}")
+            log(f"{self.log_prefix} 后台线程异常：{e}")
             traceback.print_exc()
         finally:
             worker_stop.clear()
@@ -1554,56 +1630,79 @@ class FragmentFarmGUI:
                 else:
                     eff = 0.0
                 msg = (
-                    f"人物碎片刷取已结束。\n\n"
+                    f"{self.product_label}刷取已结束。\n\n"
                     f"总运行时间：{time_str}\n"
                     f"完成波数：{self.finished_waves}\n"
-                    f"累计碎片：{self.fragment_count}\n"
-                    f"平均掉落：{rate:.2f} 碎片/波\n"
-                    f"效率：{eff:.2f} 碎片/小时\n"
+                    f"累计{self.product_label}：{self.fragment_count}\n"
+                    f"平均掉落：{rate:.2f} {self.product_short_label}/波\n"
+                    f"效率：{eff:.2f} {self.product_short_label}/小时\n"
                 )
-                post_to_main_thread(lambda: messagebox.showinfo("刷碎片完成", msg))
+                post_to_main_thread(
+                    lambda: messagebox.showinfo(
+                        f"刷{self.product_short_label}完成", msg
+                    )
+                )
 
     # ---- 首次进图 / 循环重开 ----
     def _enter_first_wave_and_setup(self) -> bool:
-        log("[碎片] 首次进图：选择密函按钮 → 人物密函 → 确认选择 → 地图AB识别 + 宏")
+        log(
+            f"{self.log_prefix} 首次进图：选择密函按钮 → {self.letter_label} → 确认选择 → 地图AB识别 + 宏"
+        )
         btn_open_letter = get_template_name("BTN_OPEN_LETTER", "选择密函.png")
-        if not wait_and_click_template(btn_open_letter, "[碎片] 首次：选择密函按钮", 25.0, 0.8):
-            log("[碎片] 首次：未能点击 选择密函.png。")
+        if not wait_and_click_template(
+            btn_open_letter,
+            f"{self.log_prefix} 首次：选择密函按钮",
+            25.0,
+            0.8,
+        ):
+            log(f"{self.log_prefix} 首次：未能点击 选择密函.png。")
             return False
         if not wait_and_click_template_from_path(
             self.selected_letter_path,
-            "[碎片] 首次：点击人物密函",
+            f"{self.log_prefix} 首次：点击{self.letter_label}",
             20.0,
             0.8,
         ):
-            log("[碎片] 首次：未能点击人物密函。")
+            log(f"{self.log_prefix} 首次：未能点击{self.letter_label}。")
             return False
-        if not wait_and_click_template(BTN_CONFIRM_LETTER, "[碎片] 首次：确认选择", 20.0, 0.8):
-            log("[碎片] 首次：未能点击 确认选择.png。")
+        if not wait_and_click_template(
+            BTN_CONFIRM_LETTER,
+            f"{self.log_prefix} 首次：确认选择",
+            20.0,
+            0.8,
+        ):
+            log(f"{self.log_prefix} 首次：未能点击 确认选择.png。")
             return False
         self._increment_wave_progress()
         return self._map_detect_and_run_macros()
 
     def _restart_from_lobby_after_retreat(self) -> bool:
-        log("[碎片] 循环重开：再次进行 → 人物密函 → 确认选择 → 地图AB + 宏")
+        log(
+            f"{self.log_prefix} 循环重开：再次进行 → {self.letter_label} → 确认选择 → 地图AB + 宏"
+        )
         if not wait_and_click_template(
             BTN_EXPEL_NEXT_WAVE,
-            "[碎片] 循环重开：再次进行按钮",
+            f"{self.log_prefix} 循环重开：再次进行按钮",
             20.0,
             0.8,
         ):
-            log("[碎片] 循环重开：未能点击 再次进行.png。")
+            log(f"{self.log_prefix} 循环重开：未能点击 再次进行.png。")
             return False
         if not wait_and_click_template_from_path(
             self.selected_letter_path,
-            "[碎片] 循环重开：点击人物密函",
+            f"{self.log_prefix} 循环重开：点击{self.letter_label}",
             20.0,
             0.8,
         ):
-            log("[碎片] 循环重开：未能点击人物密函。")
+            log(f"{self.log_prefix} 循环重开：未能点击{self.letter_label}。")
             return False
-        if not wait_and_click_template(BTN_CONFIRM_LETTER, "[碎片] 循环重开：确认选择", 20.0, 0.8):
-            log("[碎片] 循环重开：未能点击 确认选择.png。")
+        if not wait_and_click_template(
+            BTN_CONFIRM_LETTER,
+            f"{self.log_prefix} 循环重开：确认选择",
+            20.0,
+            0.8,
+        ):
+            log(f"{self.log_prefix} 循环重开：未能点击 确认选择.png。")
             return False
         self._increment_wave_progress()
         return self._map_detect_and_run_macros()
@@ -1615,7 +1714,7 @@ class FragmentFarmGUI:
         - 任意一张匹配度 >= 0.7 就认定地图
         - 然后再等待 2 秒，最后执行对应宏
         """
-        log("[碎片] 开始持续识别地图 A/B（最长 12 秒）…")
+        log(f"{self.log_prefix} 开始持续识别地图 A/B（最长 12 秒）…")
 
         deadline = time.time() + 12.0
         chosen = None
@@ -1625,7 +1724,9 @@ class FragmentFarmGUI:
         while time.time() < deadline and not worker_stop.is_set():
             score_a, _, _ = match_template("mapa.png")
             score_b, _, _ = match_template("mapb.png")
-            log(f"[碎片] mapa 匹配度 {score_a:.3f}，mapb 匹配度 {score_b:.3f}")
+            log(
+                f"{self.log_prefix} mapa 匹配度 {score_a:.3f}，mapb 匹配度 {score_b:.3f}"
+            )
 
             best = max(score_a, score_b)
             if best >= 0.7:
@@ -1635,7 +1736,7 @@ class FragmentFarmGUI:
             time.sleep(0.4)
 
         if chosen is None:
-            log("[碎片] 12 秒内地图匹配度始终低于 0.7，本趟放弃。")
+            log(f"{self.log_prefix} 12 秒内地图匹配度始终低于 0.7，本趟放弃。")
             return False
 
         if chosen == "A":
@@ -1646,11 +1747,11 @@ class FragmentFarmGUI:
             label = "mapB 宏"
 
         if not macro_path or not os.path.exists(macro_path):
-            log(f"[碎片] {label} 文件不存在：{macro_path}")
+            log(f"{self.log_prefix} {label} 文件不存在：{macro_path}")
             return False
 
         log(
-            f"[碎片] 识别为 {label}（mapa={score_a:.3f}, mapb={score_b:.3f}），"
+            f"{self.log_prefix} 识别为 {label}（mapa={score_a:.3f}, mapb={score_b:.3f}），"
             "再等待 2 秒后执行宏…"
         )
 
@@ -1658,7 +1759,7 @@ class FragmentFarmGUI:
         while time.time() - t0 < 2.0 and not worker_stop.is_set():
             time.sleep(0.1)
 
-        play_macro(macro_path, f"[碎片] {label}", 0.0, 0.3, interrupt_on_exit=False)
+        play_macro(macro_path, f"{self.log_prefix} {label}", 0.0, 0.3, interrupt_on_exit=False)
         return True
 
     # ---- 掉落界面检测 & 掉落识别 ----
@@ -1669,7 +1770,7 @@ class FragmentFarmGUI:
         """
         score, _, _ = match_template(BTN_CONFIRM_LETTER)
         if log_detail:
-            log(f"[碎片] 掉落界面检查：确认选择 匹配度 {score:.3f}")
+            log(f"{self.log_prefix} 掉落界面检查：确认选择 匹配度 {score:.3f}")
         return score >= threshold
 
     def _detect_and_pick_drop(self, threshold=0.8) -> bool:
@@ -1680,7 +1781,7 @@ class FragmentFarmGUI:
         """
         if click_template(
             BTN_CONFIRM_LETTER,
-            "[碎片] 掉落确认：确认选择",
+            f"{self.log_prefix} 掉落确认：确认选择",
             threshold=0.7,
         ):
             time.sleep(1.0)
@@ -1694,12 +1795,12 @@ class FragmentFarmGUI:
         score, _, _ = match_template(AUTO_REVIVE_TEMPLATE)
         if score >= AUTO_REVIVE_THRESHOLD:
             log(
-                f"[碎片] 检测到角色死亡（{AUTO_REVIVE_TEMPLATE} 匹配度 {score:.3f}），执行长按 X 复苏。"
+                f"{self.log_prefix} 检测到角色死亡（{AUTO_REVIVE_TEMPLATE} 匹配度 {score:.3f}），执行长按 X 复苏。"
             )
             if not self._press_and_hold_key("x", AUTO_REVIVE_HOLD_SECONDS):
-                log("[碎片] 长按 X 失败，无法执行自动复苏。")
+                log(f"{self.log_prefix} 长按 X 失败，无法执行自动复苏。")
                 return False
-            log("[碎片] 自动复苏完成，继续战斗挂机。")
+            log(f"{self.log_prefix} 自动复苏完成，继续战斗挂机。")
             return True
         return False
 
@@ -1716,7 +1817,7 @@ class FragmentFarmGUI:
             time.sleep(duration)
             return True
         except Exception as e:
-            log(f"[碎片] 长按 {key} 失败：{e}")
+            log(f"{self.log_prefix} 长按 {key} 失败：{e}")
             return False
         finally:
             if pressed:
@@ -1741,10 +1842,12 @@ class FragmentFarmGUI:
         - 如果超过 max_wait 仍然没检测到掉落界面/没选到 → 返回 'timeout'
         """
         if keyboard is None and pyautogui is None:
-            log("[碎片] 无法发送按键。")
+            log(f"{self.log_prefix} 无法发送按键。")
             return "stopped"
 
-        log(f"[碎片] 开始战斗挂机（每 5 秒按一次 E，超时 {max_wait:.1f} 秒）。")
+        log(
+            f"{self.log_prefix} 开始战斗挂机（每 5 秒按一次 E，超时 {max_wait:.1f} 秒）。"
+        )
         start = time.time()
         last_e = 0.0
         last_revive_check = start
@@ -1767,25 +1870,25 @@ class FragmentFarmGUI:
                     else:
                         pyautogui.press("e")
                 except Exception as e:
-                    log(f"[碎片] 发送 E 失败：{e}")
+                    log(f"{self.log_prefix} 发送 E 失败：{e}")
                 last_e = now
 
             if now - start >= min_drop_check_time:
                 if not drop_ui_visible:
                     if self._is_drop_ui_visible():
                         drop_ui_visible = True
-                        log("[碎片] 检测到物品掉落界面，开始识别掉落物。")
+                        log(f"{self.log_prefix} 检测到物品掉落界面，开始识别掉落物。")
                     else:
                         if now - last_ui_log > 3.0:
                             self._is_drop_ui_visible(log_detail=True)
                             last_ui_log = now
                 else:
                     if self._detect_and_pick_drop():
-                        log("[碎片] 本波掉落已选择。")
+                        log(f"{self.log_prefix} 本波掉落已选择。")
                         return "ok"
 
             if now - start > max_wait:
-                log(f"[碎片] 超过 {max_wait:.1f} 秒未检测到掉落，判定卡死。")
+                log(f"{self.log_prefix} 超过 {max_wait:.1f} 秒未检测到掉落，判定卡死。")
                 return "timeout"
 
             time.sleep(0.5)
@@ -1794,21 +1897,33 @@ class FragmentFarmGUI:
 
     # ---- 正常进入下一波（不做地图识别） ----
     def _enter_next_wave_without_map(self) -> bool:
-        log("[碎片] 进入下一波：再次进行 → 人物密函 → 确认选择")
-        if not wait_and_click_template(BTN_CONTINUE_CHALLENGE, "[碎片] 下一波：继续挑战按钮", 20.0, 0.8):
-            log("[碎片] 下一波：未能点击 继续挑战.png。")
+        log(
+            f"{self.log_prefix} 进入下一波：再次进行 → {self.letter_label} → 确认选择"
+        )
+        if not wait_and_click_template(
+            BTN_CONTINUE_CHALLENGE,
+            f"{self.log_prefix} 下一波：继续挑战按钮",
+            20.0,
+            0.8,
+        ):
+            log(f"{self.log_prefix} 下一波：未能点击 继续挑战.png。")
             return False
         self._increment_wave_progress()
         if not wait_and_click_template_from_path(
             self.selected_letter_path,
-            "[碎片] 下一波：点击人物密函",
+            f"{self.log_prefix} 下一波：点击{self.letter_label}",
             20.0,
             0.8,
         ):
-            log("[碎片] 下一波：未能点击人物密函。")
+            log(f"{self.log_prefix} 下一波：未能点击{self.letter_label}。")
             return False
-        if not wait_and_click_template(BTN_CONFIRM_LETTER, "[碎片] 下一波：确认选择", 20.0, 0.8):
-            log("[碎片] 下一波：未能点击 确认选择.png。")
+        if not wait_and_click_template(
+            BTN_CONFIRM_LETTER,
+            f"{self.log_prefix} 下一波：确认选择",
+            20.0,
+            0.8,
+        ):
+            log(f"{self.log_prefix} 下一波：未能点击 确认选择.png。")
             return False
         time.sleep(2.0)
         return True
@@ -1824,45 +1939,50 @@ class FragmentFarmGUI:
             else:
                 pyautogui.press("esc")
         except Exception as e:
-            log(f"[碎片] 发送 ESC 失败：{e}")
+            log(f"{self.log_prefix} 发送 ESC 失败：{e}")
         time.sleep(1.0)
-        click_template("G.png", "[碎片] 防卡死：点击 G.png", 0.6)
+        click_template("G.png", f"{self.log_prefix} 防卡死：点击 G.png", 0.6)
         time.sleep(1.0)
-        click_template("Q.png", "[碎片] 防卡死：点击 Q.png", 0.6)
+        click_template("Q.png", f"{self.log_prefix} 防卡死：点击 Q.png", 0.6)
         time.sleep(1.0)
 
         if not wait_and_click_template(
             BTN_EXPEL_NEXT_WAVE,
-            "[碎片] 防卡死：再次进行按钮",
+            f"{self.log_prefix} 防卡死：再次进行按钮",
             20.0,
             0.8,
         ):
-            log("[碎片] 防卡死：未能点击 再次进行.png。")
+            log(f"{self.log_prefix} 防卡死：未能点击 再次进行.png。")
             return False
 
         if not wait_and_click_template_from_path(
             self.selected_letter_path,
-            "[碎片] 防卡死：点击人物密函",
+            f"{self.log_prefix} 防卡死：点击{self.letter_label}",
             20.0,
             0.8,
         ):
-            log("[碎片] 防卡死：未能点击人物密函。")
+            log(f"{self.log_prefix} 防卡死：未能点击{self.letter_label}。")
             return False
 
         if not wait_and_click_template(
             BTN_CONFIRM_LETTER,
-            "[碎片] 防卡死：确认选择",
+            f"{self.log_prefix} 防卡死：确认选择",
             20.0,
             0.8,
         ):
-            log("[碎片] 防卡死：未能点击 确认选择.png。")
+            log(f"{self.log_prefix} 防卡死：未能点击 确认选择.png。")
             return False
 
         return self._map_detect_and_run_macros()
 
     # ---- 撤退 ----
     def _retreat_only(self):
-        wait_and_click_template(BTN_RETREAT_START, "[碎片] 撤退按钮", 20.0, 0.8)
+        wait_and_click_template(
+            BTN_RETREAT_START,
+            f"{self.log_prefix} 撤退按钮",
+            20.0,
+            0.8,
+        )
 
 
 class ExpelFragmentGUI:
@@ -1871,7 +1991,16 @@ class ExpelFragmentGUI:
     def __init__(self, parent, cfg):
         self.parent = parent
         self.cfg = cfg
-        self.cfg_key = "expel_settings"
+        self.cfg_key = getattr(self, "cfg_key", "expel_settings")
+        self.letter_label = getattr(self, "letter_label", "人物密函")
+        self.product_label = getattr(self, "product_label", "人物碎片")
+        self.product_short_label = getattr(self, "product_short_label", "碎片")
+        self.entity_label = getattr(self, "entity_label", "人物")
+        self.letters_dir = getattr(self, "letters_dir", TEMPLATE_LETTERS_DIR)
+        self.letters_dir_hint = getattr(self, "letters_dir_hint", "templates_letters")
+        self.templates_dir_hint = getattr(self, "templates_dir_hint", "templates")
+        self.preview_dir_hint = getattr(self, "preview_dir_hint", "SP")
+        self.log_prefix = getattr(self, "log_prefix", "[驱离]")
         expel_cfg = cfg.get(self.cfg_key, {})
 
         self.wave_var = tk.StringVar(value=str(expel_cfg.get("waves", 10)))
@@ -1893,11 +2022,11 @@ class ExpelFragmentGUI:
         self.run_start_time = None
         self.is_farming = False
         self.time_str_var = tk.StringVar(value="00:00:00")
-        self.rate_str_var = tk.StringVar(value="0.00 碎片/波")
-        self.eff_str_var = tk.StringVar(value="0.00 碎片/小时")
+        self.rate_str_var = tk.StringVar(value=f"0.00 {self.product_short_label}/波")
+        self.eff_str_var = tk.StringVar(value=f"0.00 {self.product_short_label}/小时")
         self.hotkey_handle = None
         self._bound_hotkey_key = None
-        self.hotkey_label = "[驱离]"
+        self.hotkey_label = self.log_prefix
 
         self._build_ui()
         self._load_letters()
@@ -1906,7 +2035,9 @@ class ExpelFragmentGUI:
     def _build_ui(self):
         tip_top = tk.Label(
             self.parent,
-            text="驱离模式：选择人物密函后自动等待 7 秒进入地图 → W 键前进 10 秒 → 随机 WASD + 每 5 秒按一次 E。",
+            text=(
+                f"驱离模式：选择{self.letter_label}后自动等待 7 秒进入地图 → W 键前进 10 秒 → 随机 WASD + 每 5 秒按一次 E。"
+            ),
             fg="red",
             font=("Microsoft YaHei", 10, "bold"),
         )
@@ -1931,74 +2062,94 @@ class ExpelFragmentGUI:
 
         hotkey_frame = tk.Frame(self.parent)
         hotkey_frame.pack(fill="x", padx=10, pady=5)
-        tk.Label(hotkey_frame, text="刷碎片热键:").pack(side="left")
+        self.hotkey_label_widget = tk.Label(
+            hotkey_frame, text=f"刷{self.product_short_label}热键:"
+        )
+        self.hotkey_label_widget.pack(side="left")
         tk.Entry(hotkey_frame, textvariable=self.hotkey_var, width=20).pack(side="left", padx=5)
         ttk.Button(hotkey_frame, text="录制热键", command=self._capture_hotkey).pack(side="left", padx=3)
         ttk.Button(hotkey_frame, text="保存设置", command=self._save_settings).pack(side="left", padx=3)
 
-        frame_letters = tk.LabelFrame(self.parent, text="人物密函选择（来自 templates_letters/）")
-        frame_letters.pack(fill="both", expand=True, padx=10, pady=5)
+        self.frame_letters = tk.LabelFrame(
+            self.parent,
+            text=f"{self.letter_label}选择（来自 {self.letters_dir_hint}/）",
+        )
+        self.frame_letters.pack(fill="both", expand=True, padx=10, pady=5)
 
-        self.letters_grid = tk.Frame(frame_letters)
+        self.letters_grid = tk.Frame(self.frame_letters)
         self.letters_grid.pack(fill="both", expand=True, padx=5, pady=5)
 
-        self.selected_label_var = tk.StringVar(value="当前未选择人物密函")
-        tk.Label(frame_letters, textvariable=self.selected_label_var, fg="#0080ff").pack(anchor="w", padx=5, pady=3)
+        self.selected_label_var = tk.StringVar(value=f"当前未选择{self.letter_label}")
+        self.selected_label_widget = tk.Label(
+            self.frame_letters, textvariable=self.selected_label_var, fg="#0080ff"
+        )
+        self.selected_label_widget.pack(anchor="w", padx=5, pady=3)
 
-        stats = tk.LabelFrame(self.parent, text="人物碎片统计（实时）")
-        stats.pack(fill="x", padx=10, pady=5)
+        self.stats_frame = tk.LabelFrame(
+            self.parent, text=f"{self.product_label}统计（实时）"
+        )
+        self.stats_frame.pack(fill="x", padx=10, pady=5)
 
-        self.stat_image_label = tk.Label(stats, width=64, height=64, relief="sunken")
+        self.stat_image_label = tk.Label(self.stats_frame, width=64, height=64, relief="sunken")
         self.stat_image_label.grid(row=0, column=0, rowspan=3, padx=5, pady=5)
 
-        tk.Label(stats, text="当前人物：").grid(row=0, column=1, sticky="e")
-        tk.Label(stats, textvariable=self.stat_name_var).grid(row=0, column=2, sticky="w")
+        self.current_entity_label = tk.Label(
+            self.stats_frame, text=f"当前{self.entity_label}："
+        )
+        self.current_entity_label.grid(row=0, column=1, sticky="e")
+        tk.Label(self.stats_frame, textvariable=self.stat_name_var).grid(row=0, column=2, sticky="w")
 
-        tk.Label(stats, text="累计碎片：").grid(row=1, column=1, sticky="e")
+        self.total_product_label = tk.Label(
+            self.stats_frame, text=f"累计{self.product_label}："
+        )
+        self.total_product_label.grid(row=1, column=1, sticky="e")
         tk.Label(
-            stats,
+            self.stats_frame,
             textvariable=self.fragment_count_var,
             font=("Microsoft YaHei", 12, "bold"),
             fg="#ff6600",
         ).grid(row=1, column=2, sticky="w")
 
-        tk.Label(stats, text="运行时间：").grid(row=0, column=3, sticky="e")
-        tk.Label(stats, textvariable=self.time_str_var).grid(row=0, column=4, sticky="w")
+        tk.Label(self.stats_frame, text="运行时间：").grid(row=0, column=3, sticky="e")
+        tk.Label(self.stats_frame, textvariable=self.time_str_var).grid(row=0, column=4, sticky="w")
 
-        tk.Label(stats, text="平均掉落：").grid(row=1, column=3, sticky="e")
-        tk.Label(stats, textvariable=self.rate_str_var).grid(row=1, column=4, sticky="w")
+        tk.Label(self.stats_frame, text="平均掉落：").grid(row=1, column=3, sticky="e")
+        tk.Label(self.stats_frame, textvariable=self.rate_str_var).grid(row=1, column=4, sticky="w")
 
-        tk.Label(stats, text="效率：").grid(row=2, column=3, sticky="e")
-        tk.Label(stats, textvariable=self.eff_str_var).grid(row=2, column=4, sticky="w")
+        tk.Label(self.stats_frame, text="效率：").grid(row=2, column=3, sticky="e")
+        tk.Label(self.stats_frame, textvariable=self.eff_str_var).grid(row=2, column=4, sticky="w")
 
         ctrl = tk.Frame(self.parent)
         ctrl.pack(fill="x", padx=10, pady=5)
-        self.start_btn = ttk.Button(ctrl, text="开始刷碎片", command=lambda: self.start_farming())
+        self.start_btn = ttk.Button(
+            ctrl, text=f"开始刷{self.product_short_label}", command=lambda: self.start_farming()
+        )
         self.start_btn.pack(side="left", padx=3)
         self.stop_btn = ttk.Button(ctrl, text="停止", command=lambda: self.stop_farming())
         self.stop_btn.pack(side="left", padx=3)
 
-        log_frame = tk.LabelFrame(self.parent, text="驱离模式日志")
-        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        self.log_text = tk.Text(log_frame, height=10)
+        self.log_frame = tk.LabelFrame(self.parent, text="驱离模式日志")
+        self.log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.log_text = tk.Text(self.log_frame, height=10)
         self.log_text.pack(side="left", fill="both", expand=True)
-        sb = tk.Scrollbar(log_frame, command=self.log_text.yview)
+        sb = tk.Scrollbar(self.log_frame, command=self.log_text.yview)
         sb.pack(side="right", fill="y")
         self.log_text.config(yscrollcommand=sb.set)
 
-        tip = tk.Label(
+        tip_text = (
+            "提示：\n"
+            f"1. 本模式无需 mapA / mapB 宏，确认{self.letter_label}后默认 7 秒进入地图。\n"
+            f"2. {self.letter_label}图片放入 {self.letters_dir_hint}/ 目录，常用按钮模板仍存放在 {self.templates_dir_hint}/ 目录。\n"
+            "3. 若卡死会自动执行 Esc→G→Q→exit_step1 的防卡死流程，并重新开始当前波。\n"
+        )
+        self.tip_label = tk.Label(
             self.parent,
-            text=(
-                "提示：\n"
-                "1. 本模式无需 mapA / mapB 宏，确认人物密函后默认 7 秒进入地图。\n"
-                "2. 人物密函图片放入 templates_letters/ 目录，常用按钮模板仍存放在 templates/ 目录。\n"
-                "3. 若卡死会自动执行 Esc→G→Q→exit_step1 的防卡死流程，并重新开始当前波。\n"
-            ),
+            text=tip_text,
             fg="#666666",
             anchor="w",
             justify="left",
         )
-        tip.pack(fill="x", padx=10, pady=(0, 8))
+        self.tip_label.pack(fill="x", padx=10, pady=(0, 8))
 
     def log(self, msg: str):
         ts = time.strftime("[%H:%M:%S] ")
@@ -2012,7 +2163,7 @@ class ExpelFragmentGUI:
         self.letter_images.clear()
 
         files = []
-        for name in os.listdir(TEMPLATE_LETTERS_DIR):
+        for name in os.listdir(self.letters_dir):
             low = name.lower()
             if low.endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp")):
                 files.append(name)
@@ -2020,12 +2171,14 @@ class ExpelFragmentGUI:
         files = files[: self.MAX_LETTERS]
 
         if not files:
-            self.selected_label_var.set("当前未选择人物密函（templates_letters/ 目录为空）")
+            self.selected_label_var.set(
+                f"当前未选择{self.letter_label}（{self.letters_dir_hint}/ 目录为空）"
+            )
             return
 
         max_per_row = 5
         for idx, name in enumerate(files):
-            full_path = os.path.join(TEMPLATE_LETTERS_DIR, name)
+            full_path = os.path.join(self.letters_dir, name)
             try:
                 img = tk.PhotoImage(file=full_path)
                 if img.width() > 128 or img.height() > 128:
@@ -2054,12 +2207,12 @@ class ExpelFragmentGUI:
                 self._highlight_button(cur_idx)
             except ValueError:
                 self.selected_letter_path = None
-                self.selected_label_var.set("当前未选择人物密函")
+                self.selected_label_var.set(f"当前未选择{self.letter_label}")
 
     def _on_letter_clicked(self, path: str, idx: int):
         self.selected_letter_path = path
         base = os.path.basename(path)
-        self.selected_label_var.set(f"当前选择人物密函：{base}")
+        self.selected_label_var.set(f"当前选择{self.letter_label}：{base}")
         self._highlight_button(idx)
         self.stat_name_var.set(base)
         self.stat_image = self.letter_images[idx]
@@ -2082,7 +2235,7 @@ class ExpelFragmentGUI:
             try:
                 hk = keyboard.read_hotkey(suppress=False)
             except Exception as e:
-                log(f"[驱离] 录制热键失败：{e}")
+                log(f"{self.log_prefix} 录制热键失败：{e}")
                 return
             post_to_main_thread(lambda: self._set_hotkey(hk))
 
@@ -2115,13 +2268,13 @@ class ExpelFragmentGUI:
                 self._on_hotkey_trigger,
             )
         except Exception as e:
-            log(f"[驱离] 绑定热键失败：{e}")
+            log(f"{self.log_prefix} 绑定热键失败：{e}")
             messagebox.showerror("错误", f"绑定热键失败：{e}")
             return
 
         self.hotkey_handle = handle
         self._bound_hotkey_key = key
-        log(f"[驱离] 已绑定热键：{key}")
+        log(f"{self.log_prefix} 已绑定热键：{key}")
 
     def _on_hotkey_trigger(self):
         post_to_main_thread(self._handle_hotkey_if_active)
@@ -2134,10 +2287,10 @@ class ExpelFragmentGUI:
 
     def _toggle_by_hotkey(self):
         if self.is_farming:
-            log("[驱离] 热键触发：请求停止刷碎片。")
+            log(f"{self.log_prefix} 热键触发：请求停止刷{self.product_short_label}。")
             self.stop_farming(from_hotkey=True)
         else:
-            log("[驱离] 热键触发：开始刷碎片。")
+            log(f"{self.log_prefix} 热键触发：开始刷{self.product_short_label}。")
             self.start_farming(from_hotkey=True)
 
     def _save_settings(self):
@@ -2165,7 +2318,7 @@ class ExpelFragmentGUI:
 
     def start_farming(self, from_hotkey: bool = False):
         if not self.selected_letter_path:
-            messagebox.showwarning("提示", "请先选择一个人物密函。")
+            messagebox.showwarning("提示", f"请先选择一个{self.letter_label}。")
             return
 
         try:
@@ -2210,14 +2363,17 @@ class ExpelFragmentGUI:
         t.start()
 
         if from_hotkey:
-            log("[驱离] 热键启动刷碎片成功。")
+            log(f"{self.log_prefix} 热键启动刷{self.product_short_label}成功。")
 
     def stop_farming(self, from_hotkey: bool = False):
         worker_stop.set()
         if not from_hotkey:
-            messagebox.showinfo("提示", "已请求停止刷碎片，本波结束后将自动退出。")
+            messagebox.showinfo(
+                "提示",
+                f"已请求停止刷{self.product_short_label}，本波结束后将自动退出。",
+            )
         else:
-            log("[驱离] 热键停止请求已发送，等待当前波结束。")
+            log(f"{self.log_prefix} 热键停止请求已发送，等待当前波结束。")
 
     def _add_fragments(self, delta: int):
         if delta <= 0:
@@ -2240,12 +2396,12 @@ class ExpelFragmentGUI:
             rate = self.fragment_count / self.finished_waves
         else:
             rate = 0.0
-        self.rate_str_var.set(f"{rate:.2f} 碎片/波")
+        self.rate_str_var.set(f"{rate:.2f} {self.product_short_label}/波")
         if elapsed > 0:
             eff = self.fragment_count / (elapsed / 3600.0)
         else:
             eff = 0.0
-        self.eff_str_var.set(f"{eff:.2f} 碎片/小时")
+        self.eff_str_var.set(f"{eff:.2f} {self.product_short_label}/小时")
 
     def _stats_timer(self):
         if not self.is_farming:
@@ -2261,22 +2417,22 @@ class ExpelFragmentGUI:
                 return
 
             if not self._prepare_first_wave():
-                log("[驱离] 首次进入失败，结束刷取。")
+                log(f"{self.log_prefix} 首次进入失败，结束刷取。")
                 return
 
             current_wave = 1
             max_wave = total_waves
 
             while not worker_stop.is_set():
-                log(f"[驱离] 开始第 {current_wave} 波战斗挂机…")
+                log(f"{self.log_prefix} 开始第 {current_wave} 波战斗挂机…")
                 result = self._run_wave_actions(current_wave)
                 if worker_stop.is_set():
                     break
 
                 if result == "timeout":
-                    log(f"[驱离] 第 {current_wave} 波判定卡死，执行防卡死逻辑…")
+                    log(f"{self.log_prefix} 第 {current_wave} 波判定卡死，执行防卡死逻辑…")
                     if not self._anti_stuck_and_reset():
-                        log("[驱离] 防卡死失败，结束刷取。")
+                        log(f"{self.log_prefix} 防卡死失败，结束刷取。")
                         break
                     continue
 
@@ -2289,7 +2445,7 @@ class ExpelFragmentGUI:
                     if self.auto_loop_var.get():
                         current_wave = 1
                     else:
-                        log("[驱离] 到达设定波数（未启用自动循环），撤退并结束。")
+                        log(f"{self.log_prefix} 到达设定波数（未启用自动循环），撤退并结束。")
                         self._retreat_only()
                         break
                 else:
@@ -2303,13 +2459,13 @@ class ExpelFragmentGUI:
                     break
 
                 if not self._prepare_next_wave():
-                    log("[驱离] 进入下一波失败，结束刷取。")
+                    log(f"{self.log_prefix} 进入下一波失败，结束刷取。")
                     break
 
             log("===== 驱离刷取 结束 =====")
 
         except Exception as e:
-            log(f"[驱离] 后台线程异常：{e}")
+            log(f"{self.log_prefix} 后台线程异常：{e}")
             traceback.print_exc()
         finally:
             worker_stop.clear()
@@ -2337,25 +2493,29 @@ class ExpelFragmentGUI:
                 else:
                     eff = 0.0
                 msg = (
-                    f"驱离刷碎片已结束。\n\n"
+                    f"驱离刷{self.product_short_label}已结束。\n\n"
                     f"总运行时间：{time_str}\n"
                     f"完成波数：{self.finished_waves}\n"
-                    f"累计碎片：{self.fragment_count}\n"
-                    f"平均掉落：{rate:.2f} 碎片/波\n"
-                    f"效率：{eff:.2f} 碎片/小时\n"
+                    f"累计{self.product_label}：{self.fragment_count}\n"
+                    f"平均掉落：{rate:.2f} {self.product_short_label}/波\n"
+                    f"效率：{eff:.2f} {self.product_short_label}/小时\n"
                 )
-                post_to_main_thread(lambda: messagebox.showinfo("驱离刷碎片完成", msg))
+                post_to_main_thread(
+                    lambda: messagebox.showinfo(
+                        f"驱离刷{self.product_short_label}完成", msg
+                    )
+                )
 
     def _prepare_first_wave(self) -> bool:
-        log("[驱离] 首次进图：人物密函 → 确认选择")
-        return self._select_letter_sequence("[驱离] 首次", need_open_button=True)
+        log(f"{self.log_prefix} 首次进图：{self.letter_label} → 确认选择")
+        return self._select_letter_sequence(f"{self.log_prefix} 首次", need_open_button=True)
 
     def _prepare_next_wave(self) -> bool:
-        log("[驱离] 下一波：再次进行 → 人物密函 → 确认")
-        if not wait_and_click_template(BTN_EXPEL_NEXT_WAVE, "[驱离] 下一波：再次进行按钮", 25.0, 0.8):
-            log("[驱离] 下一波：未能点击 再次进行.png。")
+        log(f"{self.log_prefix} 下一波：再次进行 → {self.letter_label} → 确认")
+        if not wait_and_click_template(BTN_EXPEL_NEXT_WAVE, f"{self.log_prefix} 下一波：再次进行按钮", 25.0, 0.8):
+            log(f"{self.log_prefix} 下一波：未能点击 再次进行.png。")
             return False
-        return self._select_letter_sequence("[驱离] 下一波", need_open_button=False)
+        return self._select_letter_sequence(f"{self.log_prefix} 下一波", need_open_button=False)
 
     def _select_letter_sequence(self, prefix: str, need_open_button: bool) -> bool:
         if need_open_button:
@@ -2371,11 +2531,11 @@ class ExpelFragmentGUI:
 
         if not wait_and_click_template_from_path(
             self.selected_letter_path,
-            f"{prefix}：点击人物密函",
+            f"{prefix}：点击{self.letter_label}",
             20.0,
             0.8,
         ):
-            log(f"{prefix}：未能点击人物密函。")
+            log(f"{prefix}：未能点击{self.letter_label}。")
             return False
         if not wait_and_click_template(BTN_CONFIRM_LETTER, f"{prefix}：确认选择", 20.0, 0.8):
             log(f"{prefix}：未能点击 确认选择.png。")
@@ -2390,7 +2550,7 @@ class ExpelFragmentGUI:
         return self._random_move_and_loot(self.timeout_seconds)
 
     def _wait_for_map_entry(self, wait_seconds: float = 7.0) -> bool:
-        log(f"[驱离] 确认后等待 {wait_seconds:.1f} 秒让地图载入…")
+        log(f"{self.log_prefix} 确认后等待 {wait_seconds:.1f} 秒让地图载入…")
         start = time.time()
         while time.time() - start < wait_seconds:
             if worker_stop.is_set():
@@ -2400,9 +2560,9 @@ class ExpelFragmentGUI:
 
     def _hold_forward(self, duration: float) -> bool:
         if keyboard is None and not hasattr(pyautogui, "keyDown"):
-            log("[驱离] 无法发送按键，无法执行长按 W。")
+            log(f"{self.log_prefix} 无法发送按键，无法执行长按 W。")
             return False
-        log(f"[驱离] 长按 W {duration:.1f} 秒…")
+        log(f"{self.log_prefix} 长按 W {duration:.1f} 秒…")
         self._press_key("w")
         try:
             start = time.time()
@@ -2416,10 +2576,10 @@ class ExpelFragmentGUI:
 
     def _random_move_and_loot(self, max_wait: float) -> str:
         if keyboard is None and not hasattr(pyautogui, "keyDown"):
-            log("[驱离] 无法发送按键。")
+            log(f"{self.log_prefix} 无法发送按键。")
             return "stopped"
 
-        log(f"[驱离] 顺序执行 W/A/S/D（每个 2 秒），并每 5 秒按一次 E（超时 {max_wait:.1f} 秒）。")
+        log(f"{self.log_prefix} 顺序执行 W/A/S/D（每个 2 秒），并每 5 秒按一次 E（超时 {max_wait:.1f} 秒）。")
         start = time.time()
         last_e = start
         drop_ui_visible = False
@@ -2451,18 +2611,18 @@ class ExpelFragmentGUI:
                     if not drop_ui_visible:
                         if self._is_drop_ui_visible():
                             drop_ui_visible = True
-                            log("[驱离] 检测到物品掉落界面，开始识别掉落物。")
+                            log(f"{self.log_prefix} 检测到物品掉落界面，开始识别掉落物。")
                         else:
                             if now - last_ui_log > 3.0:
                                 self._is_drop_ui_visible(log_detail=True)
                                 last_ui_log = now
                     else:
                         if self._detect_and_pick_drop():
-                            log("[驱离] 本波掉落已选择。")
+                            log(f"{self.log_prefix} 本波掉落已选择。")
                             return "ok"
 
                 if now - start > max_wait:
-                    log(f"[驱离] 超过 {max_wait:.1f} 秒未检测到掉落，判定卡死。")
+                    log(f"{self.log_prefix} 超过 {max_wait:.1f} 秒未检测到掉落，判定卡死。")
                     return "timeout"
 
                 time.sleep(0.1)
@@ -2480,7 +2640,7 @@ class ExpelFragmentGUI:
             else:
                 pyautogui.keyDown(key)
         except Exception as e:
-            log(f"[驱离] 按下 {key} 失败：{e}")
+            log(f"{self.log_prefix} 按下 {key} 失败：{e}")
 
     def _release_key(self, key: str):
         try:
@@ -2489,7 +2649,7 @@ class ExpelFragmentGUI:
             else:
                 pyautogui.keyUp(key)
         except Exception as e:
-            log(f"[驱离] 松开 {key} 失败：{e}")
+            log(f"{self.log_prefix} 松开 {key} 失败：{e}")
 
     def _tap_key(self, key: str):
         try:
@@ -2498,18 +2658,18 @@ class ExpelFragmentGUI:
             else:
                 pyautogui.press(key)
         except Exception as e:
-            log(f"[驱离] 发送 {key} 失败：{e}")
+            log(f"{self.log_prefix} 发送 {key} 失败：{e}")
 
     def _is_drop_ui_visible(self, log_detail: bool = False, threshold: float = 0.7) -> bool:
         score, _, _ = match_template(BTN_CONFIRM_LETTER)
         if log_detail:
-            log(f"[驱离] 掉落界面检查：确认选择 匹配度 {score:.3f}")
+            log(f"{self.log_prefix} 掉落界面检查：确认选择 匹配度 {score:.3f}")
         return score >= threshold
 
     def _detect_and_pick_drop(self, threshold=0.8) -> bool:
         if click_template(
             BTN_CONFIRM_LETTER,
-            "[驱离] 掉落确认：确认选择",
+            f"{self.log_prefix} 掉落确认：确认选择",
             threshold=0.7,
         ):
             time.sleep(1.0)
@@ -2523,25 +2683,55 @@ class ExpelFragmentGUI:
             else:
                 pyautogui.press("esc")
         except Exception as e:
-            log(f"[驱离] 发送 ESC 失败：{e}")
+            log(f"{self.log_prefix} 发送 ESC 失败：{e}")
         time.sleep(1.0)
-        click_template("G.png", "[驱离] 防卡死：点击 G.png", 0.6)
+        click_template("G.png", f"{self.log_prefix} 防卡死：点击 G.png", 0.6)
         time.sleep(1.0)
-        click_template("Q.png", "[驱离] 防卡死：点击 Q.png", 0.6)
+        click_template("Q.png", f"{self.log_prefix} 防卡死：点击 Q.png", 0.6)
         time.sleep(1.0)
 
         if not wait_and_click_template(
             BTN_EXPEL_NEXT_WAVE,
-            "[驱离] 防卡死：再次进行按钮",
+            f"{self.log_prefix} 防卡死：再次进行按钮",
             25.0,
             0.8,
         ):
-            log("[驱离] 防卡死：未能点击 再次进行.png。")
+            log(f"{self.log_prefix} 防卡死：未能点击 再次进行.png。")
             return False
-        return self._select_letter_sequence("[驱离] 防卡死", need_open_button=False)
+        return self._select_letter_sequence(f"{self.log_prefix} 防卡死", need_open_button=False)
 
     def _retreat_only(self):
-        wait_and_click_template(BTN_RETREAT_START, "[驱离] 撤退按钮", 20.0, 0.8)
+        wait_and_click_template(BTN_RETREAT_START, f"{self.log_prefix} 撤退按钮", 20.0, 0.8)
+
+
+class ModFragmentGUI(FragmentFarmGUI):
+    def __init__(self, parent, cfg):
+        self.cfg_key = "mod_guard_settings"
+        self.letter_label = "mod密函"
+        self.product_label = "mod成品"
+        self.product_short_label = "mod成品"
+        self.entity_label = "mod"
+        self.letters_dir = MOD_TEMPLATE_LETTERS_DIR
+        self.letters_dir_hint = "mod/templates_letters"
+        self.templates_dir_hint = "mod/templates"
+        self.preview_dir_hint = "mod/SP"
+        self.log_prefix = "[MOD]"
+        super().__init__(parent, cfg)
+
+
+class ModExpelGUI(ExpelFragmentGUI):
+    def __init__(self, parent, cfg):
+        self.cfg_key = "mod_expel_settings"
+        self.letter_label = "mod密函"
+        self.product_label = "mod成品"
+        self.product_short_label = "mod成品"
+        self.entity_label = "mod"
+        self.letters_dir = MOD_TEMPLATE_LETTERS_DIR
+        self.letters_dir_hint = "mod/templates_letters"
+        self.templates_dir_hint = "mod/templates"
+        self.preview_dir_hint = "mod/SP"
+        self.log_prefix = "[MOD-驱离]"
+        super().__init__(parent, cfg)
 
 
 # ======================================================================
@@ -2611,25 +2801,54 @@ def main():
     expel_gui = ExpelFragmentGUI(frame_expel, cfg)
     register_fragment_app(expel_gui)
 
-    fragment_frame_map = {
+    frame_mod = ttk.Frame(notebook)
+    notebook.add(frame_mod, text="mod刷取")
+
+    mod_notebook = ttk.Notebook(frame_mod)
+    mod_notebook.pack(fill="both", expand=True)
+
+    mod_guard_frame = ttk.Frame(mod_notebook)
+    mod_notebook.add(mod_guard_frame, text="探险无尽血清")
+    mod_guard_gui = ModFragmentGUI(mod_guard_frame, cfg)
+    register_fragment_app(mod_guard_gui)
+
+    mod_expel_frame = ttk.Frame(mod_notebook)
+    mod_notebook.add(mod_expel_frame, text="驱离")
+    mod_expel_gui = ModExpelGUI(mod_expel_frame, cfg)
+    register_fragment_app(mod_expel_gui)
+
+    fragment_gui_map = {
         frame_guard: guard_gui,
         frame_expel: expel_gui,
+        mod_guard_frame: mod_guard_gui,
+        mod_expel_frame: mod_expel_gui,
     }
+
+    fragment_notebooks = [
+        (frame_fragment, fragment_notebook),
+        (frame_mod, mod_notebook),
+    ]
 
     def update_active_fragment_gui(event=None):
         current_main = notebook.select()
-        if notebook.nametowidget(current_main) is not frame_fragment:
+        if not current_main:
             set_active_fragment_gui(None)
             return
-        current_sub = fragment_notebook.select()
-        if not current_sub:
-            set_active_fragment_gui(None)
-            return
-        frame = fragment_notebook.nametowidget(current_sub)
-        gui = fragment_frame_map.get(frame)
-        set_active_fragment_gui(gui)
+        main_widget = notebook.nametowidget(current_main)
+        for container, sub_nb in fragment_notebooks:
+            if main_widget is container:
+                current_sub = sub_nb.select()
+                if not current_sub:
+                    set_active_fragment_gui(None)
+                    return
+                frame = sub_nb.nametowidget(current_sub)
+                gui = fragment_gui_map.get(frame)
+                set_active_fragment_gui(gui)
+                return
+        set_active_fragment_gui(None)
 
     fragment_notebook.bind("<<NotebookTabChanged>>", update_active_fragment_gui)
+    mod_notebook.bind("<<NotebookTabChanged>>", update_active_fragment_gui)
     notebook.bind("<<NotebookTabChanged>>", update_active_fragment_gui)
     update_active_fragment_gui()
 
