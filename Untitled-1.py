@@ -14,6 +14,7 @@ import traceback
 import copy
 import queue
 import random
+import importlib.util
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -72,6 +73,14 @@ try:
     import pygetwindow as gw
 except Exception:
     gw = None
+
+_pil_spec = importlib.util.find_spec("PIL")
+if _pil_spec is not None:
+    from PIL import Image, ImageOps, ImageTk
+else:
+    Image = None
+    ImageOps = None
+    ImageTk = None
 
 # ---------- 全局 ----------
 DEFAULT_CONFIG = {
@@ -157,6 +166,9 @@ AUTO_REVIVE_TEMPLATE = "x.png"
 AUTO_REVIVE_THRESHOLD = 0.8
 AUTO_REVIVE_CHECK_INTERVAL = 10.0
 AUTO_REVIVE_HOLD_SECONDS = 6.0
+
+LETTER_MATCH_THRESHOLD = 0.8
+LETTER_IMAGE_SIZE = 128
 
 UID_MASK_ALPHA = 0.92
 UID_MASK_CELL = 10
@@ -414,9 +426,12 @@ def match_template_from_path(path: str):
     return max_val, x, y
 
 
-def wait_and_click_template_from_path(path: str, step_name: str,
-                                      timeout: float = 15.0,
-                                      threshold: float = 0.8) -> bool:
+def wait_and_click_template_from_path(
+    path: str,
+    step_name: str,
+    timeout: float = 15.0,
+    threshold: float = LETTER_MATCH_THRESHOLD,
+) -> bool:
     start = time.time()
     while time.time() - start < timeout and not worker_stop.is_set():
         score, x, y = match_template_from_path(path)
@@ -427,6 +442,52 @@ def wait_and_click_template_from_path(path: str, step_name: str,
             return True
         time.sleep(0.5)
     return False
+
+
+def load_uniform_letter_image(path: str, box_size: int = LETTER_IMAGE_SIZE):
+    if Image is not None and ImageTk is not None:
+        try:
+            with Image.open(path) as pil_img:
+                pil_img = pil_img.convert("RGBA")
+                fitted = ImageOps.contain(pil_img, (box_size, box_size))
+                background = Image.new("RGBA", (box_size, box_size), (0, 0, 0, 0))
+                offset = (
+                    (box_size - fitted.width) // 2,
+                    (box_size - fitted.height) // 2,
+                )
+                background.paste(fitted, offset, fitted)
+                return ImageTk.PhotoImage(background)
+        except Exception as exc:
+            log(f"加载图片失败：{path}，{exc}")
+
+    try:
+        tk_img = tk.PhotoImage(file=path)
+    except Exception as exc:
+        log(f"加载图片失败：{path}，{exc}")
+        return None
+
+    max_side = max(tk_img.width(), tk_img.height())
+    if max_side > box_size:
+        scale = max(1, (max_side + box_size - 1) // box_size)
+        tk_img = tk_img.subsample(scale, scale)
+
+    canvas = tk.PhotoImage(width=box_size, height=box_size)
+    offset_x = max((box_size - tk_img.width()) // 2, 0)
+    offset_y = max((box_size - tk_img.height()) // 2, 0)
+    canvas.tk.call(
+        canvas,
+        "copy",
+        tk_img,
+        "-from",
+        0,
+        0,
+        tk_img.width(),
+        tk_img.height(),
+        "-to",
+        offset_x,
+        offset_y,
+    )
+    return canvas
 
 
 class UIDMaskManager:
@@ -1114,7 +1175,7 @@ class FragmentFarmGUI:
         )
         self.stats_frame.pack(fill="x", padx=10, pady=5)
 
-        self.stat_image_label = tk.Label(self.stats_frame, width=64, height=64, relief="sunken")
+        self.stat_image_label = tk.Label(self.stats_frame, relief="sunken")
         self.stat_image_label.grid(row=0, column=0, rowspan=3, padx=5, pady=5)
 
         self.current_entity_label = tk.Label(
@@ -1195,7 +1256,13 @@ class FragmentFarmGUI:
     # ---- 人物密函 ----
     def _load_letters(self):
         for b in self.letter_buttons:
+            parent = b.master
             b.destroy()
+            if parent not in (None, self.letters_grid):
+                try:
+                    parent.destroy()
+                except Exception:
+                    pass
         self.letter_buttons.clear()
         self.letter_images.clear()
 
@@ -1214,27 +1281,33 @@ class FragmentFarmGUI:
             return
 
         max_per_row = 5
+        for col in range(max_per_row):
+            self.letters_grid.grid_columnconfigure(col, weight=1, uniform="letters")
         for idx, name in enumerate(files):
             full_path = os.path.join(self.letters_dir, name)
-            try:
-                img = tk.PhotoImage(file=full_path)
-                max_side = max(img.width(), img.height())
-                if max_side > 128:
-                    scale = max(1, (max_side + 127) // 128)
-                    img = img.subsample(scale, scale)
-            except Exception:
+            img = load_uniform_letter_image(full_path)
+            if img is None:
                 continue
             self.letter_images.append(img)
             r = idx // max_per_row
             c = idx % max_per_row
-            btn = tk.Button(
+            cell = tk.Frame(
                 self.letters_grid,
+                width=LETTER_IMAGE_SIZE + 8,
+                height=LETTER_IMAGE_SIZE + 8,
+                bd=0,
+                highlightthickness=0,
+            )
+            cell.grid(row=r, column=c, padx=4, pady=4, sticky="nsew")
+            cell.grid_propagate(False)
+            btn = tk.Button(
+                cell,
                 image=img,
                 relief="raised",
                 borderwidth=2,
                 command=lambda p=full_path, b_idx=idx: self._on_letter_clicked(p, b_idx),
             )
-            btn.grid(row=r, column=c, padx=4, pady=4)
+            btn.pack(expand=True, fill="both")
             self.letter_buttons.append(btn)
 
         if self.selected_letter_path:
@@ -1652,7 +1725,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 首次：点击{self.letter_label}",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 首次：未能点击{self.letter_label}。")
             return False
@@ -1660,7 +1733,7 @@ class FragmentFarmGUI:
             BTN_CONFIRM_LETTER,
             f"{self.log_prefix} 首次：确认选择",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 首次：未能点击 确认选择.png。")
             return False
@@ -1683,7 +1756,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 循环重开：点击{self.letter_label}",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 循环重开：未能点击{self.letter_label}。")
             return False
@@ -1691,7 +1764,7 @@ class FragmentFarmGUI:
             BTN_CONFIRM_LETTER,
             f"{self.log_prefix} 循环重开：确认选择",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 循环重开：未能点击 确认选择.png。")
             return False
@@ -1904,7 +1977,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 下一波：点击{self.letter_label}",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 下一波：未能点击{self.letter_label}。")
             return False
@@ -1912,7 +1985,7 @@ class FragmentFarmGUI:
             BTN_CONFIRM_LETTER,
             f"{self.log_prefix} 下一波：确认选择",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 下一波：未能点击 确认选择.png。")
             return False
@@ -1950,7 +2023,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 防卡死：点击{self.letter_label}",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{self.log_prefix} 防卡死：未能点击{self.letter_label}。")
             return False
@@ -2081,7 +2154,7 @@ class ExpelFragmentGUI:
         )
         self.stats_frame.pack(fill="x", padx=10, pady=5)
 
-        self.stat_image_label = tk.Label(self.stats_frame, width=64, height=64, relief="sunken")
+        self.stat_image_label = tk.Label(self.stats_frame, relief="sunken")
         self.stat_image_label.grid(row=0, column=0, rowspan=3, padx=5, pady=5)
 
         self.current_entity_label = tk.Label(
@@ -2149,7 +2222,13 @@ class ExpelFragmentGUI:
 
     def _load_letters(self):
         for b in self.letter_buttons:
+            parent = b.master
             b.destroy()
+            if parent not in (None, self.letters_grid):
+                try:
+                    parent.destroy()
+                except Exception:
+                    pass
         self.letter_buttons.clear()
         self.letter_images.clear()
 
@@ -2168,27 +2247,33 @@ class ExpelFragmentGUI:
             return
 
         max_per_row = 5
+        for col in range(max_per_row):
+            self.letters_grid.grid_columnconfigure(col, weight=1, uniform="expel_letters")
         for idx, name in enumerate(files):
             full_path = os.path.join(self.letters_dir, name)
-            try:
-                img = tk.PhotoImage(file=full_path)
-                max_side = max(img.width(), img.height())
-                if max_side > 128:
-                    scale = max(1, (max_side + 127) // 128)
-                    img = img.subsample(scale, scale)
-            except Exception:
+            img = load_uniform_letter_image(full_path)
+            if img is None:
                 continue
             self.letter_images.append(img)
             r = idx // max_per_row
             c = idx % max_per_row
-            btn = tk.Button(
+            cell = tk.Frame(
                 self.letters_grid,
+                width=LETTER_IMAGE_SIZE + 8,
+                height=LETTER_IMAGE_SIZE + 8,
+                bd=0,
+                highlightthickness=0,
+            )
+            cell.grid(row=r, column=c, padx=4, pady=4, sticky="nsew")
+            cell.grid_propagate(False)
+            btn = tk.Button(
+                cell,
                 image=img,
                 relief="raised",
                 borderwidth=2,
                 command=lambda p=full_path, b_idx=idx: self._on_letter_clicked(p, b_idx),
             )
-            btn.grid(row=r, column=c, padx=4, pady=4)
+            btn.pack(expand=True, fill="both")
             self.letter_buttons.append(btn)
 
         if self.selected_letter_path:
@@ -2524,11 +2609,16 @@ class ExpelFragmentGUI:
             self.selected_letter_path,
             f"{prefix}：点击{self.letter_label}",
             20.0,
-            0.8,
+            LETTER_MATCH_THRESHOLD,
         ):
             log(f"{prefix}：未能点击{self.letter_label}。")
             return False
-        if not wait_and_click_template(BTN_CONFIRM_LETTER, f"{prefix}：确认选择", 20.0, 0.8):
+        if not wait_and_click_template(
+            BTN_CONFIRM_LETTER,
+            f"{prefix}：确认选择",
+            20.0,
+            LETTER_MATCH_THRESHOLD,
+        ):
             log(f"{prefix}：未能点击 确认选择.png。")
             return False
         return True
@@ -2741,22 +2831,28 @@ def main():
 
     try:
         base_h = 1080
-        scale = max(1.0, min(1.5, sh / base_h))
-        root.tk.call("tk", "scaling", scale)
+        dpi_scale = max(0.85, min(1.5, sh / base_h))
+        root.tk.call("tk", "scaling", dpi_scale)
     except Exception:
         pass
 
-    win_w = min(1350, int(sw * 0.95))
-    win_h = min(900, int(sh * 0.95))
-    pos_x = (sw - win_w) // 2
-    pos_y = (sh - win_h) // 2
+    base_w, base_h = 1350, 900
+    margin_ratio = 0.92
+    avail_w = int(sw * margin_ratio)
+    avail_h = int(sh * margin_ratio)
+    scale_ratio = min(1.0, avail_w / base_w, avail_h / base_h)
+    win_w = max(min(base_w, avail_w), min(avail_w, 1000))
+    win_h = max(min(base_h, avail_h), min(avail_h, 650))
+    win_w = int(max(win_w, base_w * scale_ratio))
+    win_h = int(max(win_h, base_h * scale_ratio))
+
+    win_w = min(win_w, sw)
+    win_h = min(win_h, sh)
+
+    pos_x = max((sw - win_w) // 2, 0)
+    pos_y = max((sh - win_h) // 2, 0)
     root.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
-    root.minsize(1000, 650)
-
-    try:
-        root.state("zoomed")
-    except Exception:
-        pass
+    root.minsize(min(win_w, 1000), min(win_h, 650))
 
     toolbar = ttk.Frame(root)
     toolbar.pack(fill="x", padx=10, pady=5)
