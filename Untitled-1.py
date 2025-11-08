@@ -33,11 +33,6 @@ SP_DIR = os.path.join(DATA_DIR, "SP")
 UID_DIR = os.path.join(DATA_DIR, "UID")
 
 MOD_DIR = os.path.join(DATA_DIR, "mod")
-MOD_TEMPLATE_DIR = os.path.join(MOD_DIR, "templates")
-MOD_TEMPLATE_LETTERS_DIR = os.path.join(MOD_DIR, "templates_letters")
-MOD_TEMPLATE_DROPS_DIR = os.path.join(MOD_DIR, "templates_drops")
-MOD_SP_DIR = os.path.join(MOD_DIR, "SP")
-MOD_UID_DIR = os.path.join(MOD_DIR, "UID")
 
 # 新项目：人物密函图片 / 掉落物图片
 TEMPLATE_LETTERS_DIR = os.path.join(DATA_DIR, "templates_letters")
@@ -50,11 +45,7 @@ for d in (
     TEMPLATE_DROPS_DIR,
     SP_DIR,
     UID_DIR,
-    MOD_TEMPLATE_DIR,
-    MOD_TEMPLATE_LETTERS_DIR,
-    MOD_TEMPLATE_DROPS_DIR,
-    MOD_SP_DIR,
-    MOD_UID_DIR,
+    MOD_DIR,
 ):
     os.makedirs(d, exist_ok=True)
 
@@ -1227,10 +1218,10 @@ class FragmentFarmGUI:
             full_path = os.path.join(self.letters_dir, name)
             try:
                 img = tk.PhotoImage(file=full_path)
-                if img.width() > 128 or img.height() > 128:
-                    sx = max(1, img.width() // 128)
-                    sy = max(1, img.height() // 128)
-                    img = img.subsample(sx, sy)
+                max_side = max(img.width(), img.height())
+                if max_side > 128:
+                    scale = max(1, (max_side + 127) // 128)
+                    img = img.subsample(scale, scale)
             except Exception:
                 continue
             self.letter_images.append(img)
@@ -2181,10 +2172,10 @@ class ExpelFragmentGUI:
             full_path = os.path.join(self.letters_dir, name)
             try:
                 img = tk.PhotoImage(file=full_path)
-                if img.width() > 128 or img.height() > 128:
-                    sx = max(1, img.width() // 128)
-                    sy = max(1, img.height() // 128)
-                    img = img.subsample(sx, sy)
+                max_side = max(img.width(), img.height())
+                if max_side > 128:
+                    scale = max(1, (max_side + 127) // 128)
+                    img = img.subsample(scale, scale)
             except Exception:
                 continue
             self.letter_images.append(img)
@@ -2711,10 +2702,9 @@ class ModFragmentGUI(FragmentFarmGUI):
         self.product_label = "mod成品"
         self.product_short_label = "mod成品"
         self.entity_label = "mod"
-        self.letters_dir = MOD_TEMPLATE_LETTERS_DIR
-        self.letters_dir_hint = "mod/templates_letters"
-        self.templates_dir_hint = "mod/templates"
-        self.preview_dir_hint = "mod/SP"
+        self.letters_dir = MOD_DIR
+        self.letters_dir_hint = "mod"
+        self.preview_dir_hint = "mod"
         self.log_prefix = "[MOD]"
         super().__init__(parent, cfg)
 
@@ -2726,10 +2716,9 @@ class ModExpelGUI(ExpelFragmentGUI):
         self.product_label = "mod成品"
         self.product_short_label = "mod成品"
         self.entity_label = "mod"
-        self.letters_dir = MOD_TEMPLATE_LETTERS_DIR
-        self.letters_dir_hint = "mod/templates_letters"
-        self.templates_dir_hint = "mod/templates"
-        self.preview_dir_hint = "mod/SP"
+        self.letters_dir = MOD_DIR
+        self.letters_dir_hint = "mod"
+        self.preview_dir_hint = "mod"
         self.log_prefix = "[MOD-驱离]"
         super().__init__(parent, cfg)
 
