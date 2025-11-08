@@ -14,6 +14,7 @@ import traceback
 import copy
 import queue
 import random
+import math
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -33,11 +34,6 @@ SP_DIR = os.path.join(DATA_DIR, "SP")
 UID_DIR = os.path.join(DATA_DIR, "UID")
 
 MOD_DIR = os.path.join(DATA_DIR, "mod")
-MOD_TEMPLATE_DIR = os.path.join(MOD_DIR, "templates")
-MOD_TEMPLATE_LETTERS_DIR = os.path.join(MOD_DIR, "templates_letters")
-MOD_TEMPLATE_DROPS_DIR = os.path.join(MOD_DIR, "templates_drops")
-MOD_SP_DIR = os.path.join(MOD_DIR, "SP")
-MOD_UID_DIR = os.path.join(MOD_DIR, "UID")
 
 # 新项目：人物密函图片 / 掉落物图片
 TEMPLATE_LETTERS_DIR = os.path.join(DATA_DIR, "templates_letters")
@@ -50,11 +46,7 @@ for d in (
     TEMPLATE_DROPS_DIR,
     SP_DIR,
     UID_DIR,
-    MOD_TEMPLATE_DIR,
-    MOD_TEMPLATE_LETTERS_DIR,
-    MOD_TEMPLATE_DROPS_DIR,
-    MOD_SP_DIR,
-    MOD_UID_DIR,
+    MOD_DIR,
 ):
     os.makedirs(d, exist_ok=True)
 
@@ -237,19 +229,46 @@ def ensure_goal_progress_style():
         pass
 
 
-def load_preview_image(path: str, max_size: int = 72):
+def _create_square_thumbnail(src_img: tk.PhotoImage, target_size: int, background: str) -> tk.PhotoImage:
+    """Center ``src_img`` inside a square canvas of ``target_size`` pixels."""
+
+    target_size = max(1, int(target_size))
+    square = tk.PhotoImage(width=target_size, height=target_size)
+
+    try:
+        square.tk.call(square, "put", background, "-to", 0, 0, target_size, target_size)
+    except Exception:
+        pass
+
+    w = max(src_img.width(), 1)
+    h = max(src_img.height(), 1)
+    offset_x = max(0, (target_size - w) // 2)
+    offset_y = max(0, (target_size - h) // 2)
+
+    try:
+        square.tk.call(square, "copy", src_img, "-from", 0, 0, w, h, "-to", offset_x, offset_y)
+    except Exception:
+        return src_img
+    return square
+
+
+def load_square_image(path: str, max_size: int, background: str = "#f0f0f0"):
     if not path or not os.path.exists(path):
         return None
     try:
         img = tk.PhotoImage(file=path)
         w = max(img.width(), 1)
         h = max(img.height(), 1)
-        scale = max(1, (max(w, h) + max_size - 1) // max_size)
+        scale = max(1, math.ceil(max(w, h) / max(1, int(max_size))))
         if scale > 1:
             img = img.subsample(scale, scale)
-        return img
+        return _create_square_thumbnail(img, max_size, background)
     except Exception:
         return None
+
+
+def load_preview_image(path: str, max_size: int = 72):
+    return load_square_image(path, max_size, background="#f6f6f6")
 
 
 # ---------- 配置 ----------
@@ -1017,6 +1036,9 @@ class FragmentFarmGUI:
         self.templates_dir_hint = getattr(self, "templates_dir_hint", "templates")
         self.preview_dir_hint = getattr(self, "preview_dir_hint", "SP")
         self.log_prefix = getattr(self, "log_prefix", "[碎片]")
+        self.letter_match_threshold = float(
+            getattr(self, "letter_match_threshold", 0.8)
+        )
         guard_cfg = cfg.get(self.cfg_key, {})
 
         self.wave_var = tk.StringVar(value=str(guard_cfg.get("waves", 10)))
@@ -1225,13 +1247,8 @@ class FragmentFarmGUI:
         max_per_row = 5
         for idx, name in enumerate(files):
             full_path = os.path.join(self.letters_dir, name)
-            try:
-                img = tk.PhotoImage(file=full_path)
-                if img.width() > 128 or img.height() > 128:
-                    sx = max(1, img.width() // 128)
-                    sy = max(1, img.height() // 128)
-                    img = img.subsample(sx, sy)
-            except Exception:
+            img = load_square_image(full_path, 128)
+            if img is None:
                 continue
             self.letter_images.append(img)
             r = idx // max_per_row
@@ -1661,7 +1678,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 首次：点击{self.letter_label}",
             20.0,
-            0.8,
+            self.letter_match_threshold,
         ):
             log(f"{self.log_prefix} 首次：未能点击{self.letter_label}。")
             return False
@@ -1692,7 +1709,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 循环重开：点击{self.letter_label}",
             20.0,
-            0.8,
+            self.letter_match_threshold,
         ):
             log(f"{self.log_prefix} 循环重开：未能点击{self.letter_label}。")
             return False
@@ -1913,7 +1930,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 下一波：点击{self.letter_label}",
             20.0,
-            0.8,
+            self.letter_match_threshold,
         ):
             log(f"{self.log_prefix} 下一波：未能点击{self.letter_label}。")
             return False
@@ -1959,7 +1976,7 @@ class FragmentFarmGUI:
             self.selected_letter_path,
             f"{self.log_prefix} 防卡死：点击{self.letter_label}",
             20.0,
-            0.8,
+            self.letter_match_threshold,
         ):
             log(f"{self.log_prefix} 防卡死：未能点击{self.letter_label}。")
             return False
@@ -2001,6 +2018,9 @@ class ExpelFragmentGUI:
         self.templates_dir_hint = getattr(self, "templates_dir_hint", "templates")
         self.preview_dir_hint = getattr(self, "preview_dir_hint", "SP")
         self.log_prefix = getattr(self, "log_prefix", "[驱离]")
+        self.letter_match_threshold = float(
+            getattr(self, "letter_match_threshold", 0.8)
+        )
         expel_cfg = cfg.get(self.cfg_key, {})
 
         self.wave_var = tk.StringVar(value=str(expel_cfg.get("waves", 10)))
@@ -2181,10 +2201,10 @@ class ExpelFragmentGUI:
             full_path = os.path.join(self.letters_dir, name)
             try:
                 img = tk.PhotoImage(file=full_path)
-                if img.width() > 128 or img.height() > 128:
-                    sx = max(1, img.width() // 128)
-                    sy = max(1, img.height() // 128)
-                    img = img.subsample(sx, sy)
+                max_side = max(img.width(), img.height())
+                if max_side > 128:
+                    scale = max(1, (max_side + 127) // 128)
+                    img = img.subsample(scale, scale)
             except Exception:
                 continue
             self.letter_images.append(img)
@@ -2533,7 +2553,7 @@ class ExpelFragmentGUI:
             self.selected_letter_path,
             f"{prefix}：点击{self.letter_label}",
             20.0,
-            0.8,
+            self.letter_match_threshold,
         ):
             log(f"{prefix}：未能点击{self.letter_label}。")
             return False
@@ -2711,11 +2731,11 @@ class ModFragmentGUI(FragmentFarmGUI):
         self.product_label = "mod成品"
         self.product_short_label = "mod成品"
         self.entity_label = "mod"
-        self.letters_dir = MOD_TEMPLATE_LETTERS_DIR
-        self.letters_dir_hint = "mod/templates_letters"
-        self.templates_dir_hint = "mod/templates"
-        self.preview_dir_hint = "mod/SP"
+        self.letters_dir = MOD_DIR
+        self.letters_dir_hint = "mod"
+        self.preview_dir_hint = "mod"
         self.log_prefix = "[MOD]"
+        self.letter_match_threshold = 0.55
         super().__init__(parent, cfg)
 
 
@@ -2726,11 +2746,11 @@ class ModExpelGUI(ExpelFragmentGUI):
         self.product_label = "mod成品"
         self.product_short_label = "mod成品"
         self.entity_label = "mod"
-        self.letters_dir = MOD_TEMPLATE_LETTERS_DIR
-        self.letters_dir_hint = "mod/templates_letters"
-        self.templates_dir_hint = "mod/templates"
-        self.preview_dir_hint = "mod/SP"
+        self.letters_dir = MOD_DIR
+        self.letters_dir_hint = "mod"
+        self.preview_dir_hint = "mod"
         self.log_prefix = "[MOD-驱离]"
+        self.letter_match_threshold = 0.55
         super().__init__(parent, cfg)
 
 
