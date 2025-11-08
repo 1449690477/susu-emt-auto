@@ -26,6 +26,28 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = APP_DIR
 
+
+def ensure_directory(path: str):
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        # 可能是只读目录（如 _MEIPASS），忽略异常
+        pass
+
+
+def resolve_mod_directory() -> str:
+    external_mod = os.path.join(APP_DIR, "mod")
+    internal_mod = os.path.join(DATA_DIR, "mod")
+
+    if os.path.isdir(external_mod):
+        return external_mod
+    if os.path.isdir(internal_mod):
+        return internal_mod
+
+    ensure_directory(external_mod)
+    return external_mod
+
+
 BASE_DIR = DATA_DIR
 TEMPLATE_DIR = os.path.join(DATA_DIR, "templates")
 SCRIPTS_DIR = os.path.join(DATA_DIR, "scripts")
@@ -33,7 +55,7 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 SP_DIR = os.path.join(DATA_DIR, "SP")
 UID_DIR = os.path.join(DATA_DIR, "UID")
 
-MOD_DIR = os.path.join(DATA_DIR, "mod")
+MOD_DIR = resolve_mod_directory()
 
 # 新项目：人物密函图片 / 掉落物图片
 TEMPLATE_LETTERS_DIR = os.path.join(DATA_DIR, "templates_letters")
@@ -48,7 +70,7 @@ for d in (
     UID_DIR,
     MOD_DIR,
 ):
-    os.makedirs(d, exist_ok=True)
+    ensure_directory(d)
 
 # ---------- 第三方库 ----------
 try:
